@@ -14,6 +14,8 @@ use gpui::{
 
 use crate::{ActiveTheme, global_state::GlobalState, input::Selection, text::node::LinkMark};
 
+use super::utils::normalize_runs_for_text;
+
 /// A inline element used to render a inline text and support selectable.
 ///
 /// All text in TextView (including the CodeBlock) used this for text rendering.
@@ -263,6 +265,7 @@ impl Element for Inline {
             runs.push(text_style.to_run(self.text.len() - ix));
         }
 
+        let runs = normalize_runs_for_text(self.text.as_ref(), runs);
         self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
         let (layout_id, _) =
             self.styled_text

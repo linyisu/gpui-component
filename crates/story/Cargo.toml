@@ -6,8 +6,9 @@ edition.workspace = true
 
 [features]
 inspector = ["gpui-component/inspector"]
+markdown-math = ["gpui-component/markdown-math"]
 tree-sitter = ["gpui-component/tree-sitter-languages"]
-default = ["tree-sitter"]
+default = ["tree-sitter", "markdown-math"]
 
 [dependencies]
 anyhow.workspace = true

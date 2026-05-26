@@ -17,6 +17,14 @@ doctest = false
 [features]
 decimal = ["dep:rust_decimal"]
 inspector = ["gpui_macros/inspector", "gpui/inspector"]
+markdown-math = [
+    "dep:ratex-font",
+    "dep:ratex-katex-fonts",
+    "dep:ratex-layout",
+    "dep:ratex-parser",
+    "dep:ratex-types",
+    "dep:ttf-parser",
+]
 
 # For syntax highlighting in Markdown and CodeEditor.
 tree-sitter-languages = [
@@ -128,6 +136,14 @@ rust_decimal = { version = "1.37.0", optional = true }
 
 # Markdown Parser
 markdown = { version = "1.0.0", features = ["serde"] }
+
+# Math Rendering
+ratex-font = { version = "0.1.9", optional = true }
+ratex-katex-fonts = { version = "0.1.9", optional = true }
+ratex-layout = { version = "0.1.9", optional = true }
+ratex-parser = { version = "0.1.9", optional = true }
+ratex-types = { version = "0.1.9", optional = true }
+ttf-parser = { version = "0.25.1", optional = true }
 
 # HTML Parser
 html5ever = "0.27"

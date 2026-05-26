@@ -1153,12 +1153,12 @@ impl TextElement {
         let buffer_lines = state.display_map.lines();
 
         if is_single_line {
-            let shaped_line = window.text_system().shape_line(
-                display_text.to_string().into(),
-                font_size,
-                &runs,
-                None,
-            );
+            let display_text = display_text.to_string();
+            let runs = normalize_runs_for_text(&display_text, runs.to_vec());
+            let shaped_line =
+                window
+                    .text_system()
+                    .shape_line(display_text.into(), font_size, &runs, None);
 
             let line_layout = LineLayout::new()
                 .lines(smallvec::smallvec![shaped_line])
@@ -1172,6 +1172,7 @@ impl TextElement {
             let mut placeholder_lines = SmallVec::new();
 
             for (line, line_runs) in placeholder_line_runs(&placeholder_text, runs) {
+                let line_runs = normalize_runs_for_text(line, line_runs);
                 let shaped_line = window.text_system().shape_line(
                     line.to_string().into(),
                     font_size,
@@ -1217,6 +1218,7 @@ impl TextElement {
                 };
 
                 let sub_line: SharedString = line_text[range.clone()].to_string().into();
+                let line_runs = normalize_runs_for_text(sub_line.as_ref(), line_runs);
                 let shaped_line = window
                     .text_system()
                     .shape_line(sub_line, font_size, &line_runs, None);
@@ -2154,6 +2156,44 @@ fn placeholder_line_runs<'a>(
     result
 }
 
+fn normalize_runs_for_text(text: &str, runs: Vec<TextRun>) -> Vec<TextRun> {
+    if text.is_empty() {
+        return vec![];
+    }
+
+    let mut normalized = Vec::with_capacity(runs.len());
+    let mut offset = 0;
+
+    for run in runs {
+        if offset >= text.len() {
+            break;
+        }
+
+        let mut end = offset.saturating_add(run.len).min(text.len());
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+
+        if end <= offset {
+            continue;
+        }
+
+        normalized.push(TextRun {
+            len: end - offset,
+            ..run
+        });
+        offset = end;
+    }
+
+    if offset < text.len() {
+        if let Some(last_run) = normalized.last_mut() {
+            last_run.len += text.len() - offset;
+        }
+    }
+
+    normalized
+}
+
 /// Get the runs for the given range.
 ///
 /// The range is the byte range of the wrapped line.
@@ -2368,6 +2408,41 @@ mod tests {
         assert_runs(runs_for_range(&runs, 3, &(0..3)), &[1, 2]);
         assert_runs(runs_for_range(&runs, 3, &(2..10)), &[4, 1, 3]);
         assert_runs(runs_for_range(&runs, 9, &(0..8)), &[1, 7]);
+    }
+
+    #[test]
+    fn test_normalize_runs_for_text_keeps_utf8_boundaries() {
+        let run = TextRun {
+            len: 0,
+            font: gpui::font(".SystemUIFont"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let text = "- normal \u{6B63}\u{5E38} -> supported";
+
+        let runs = normalize_runs_for_text(
+            text,
+            vec![
+                TextRun {
+                    len: 11,
+                    ..run.clone()
+                },
+                TextRun { len: 32, ..run },
+            ],
+        );
+
+        let mut offset = 0;
+        for run in &runs {
+            offset += run.len;
+            assert!(
+                text.is_char_boundary(offset),
+                "run boundary {offset} should be a UTF-8 char boundary"
+            );
+        }
+
+        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
     }
 
     #[test]

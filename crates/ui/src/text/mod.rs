@@ -1,6 +1,7 @@
 mod document;
 mod format;
 mod inline;
+mod math;
 mod node;
 mod state;
 mod style;
@@ -13,6 +14,7 @@ pub use style::*;
 pub use text_view::*;
 
 pub(crate) fn init(cx: &mut App) {
+    math::init(cx);
     state::init(cx);
 }
 

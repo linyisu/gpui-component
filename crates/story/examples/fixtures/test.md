@@ -226,6 +226,148 @@ This is paragraph of the heading 6.
 
 <img src="https://miro.medium.com/v2/resize:fit:1400/format:webp/1*QY36p64kSGfBQsIFci8WBw.png" alt="The Best Programming Languages to Learn in 2025" width="100%" />
 
+## Math
+
+### Inline math
+
+Inline formula: $E=mc^2$.
+
+Multiple formulas in one paragraph: $a^2+b^2=c^2$, $e^{i\pi}+1=0$, and $\sin^2x+\cos^2x=1$.
+
+- $F=ma$
+- The gradient vector is $\nabla f(x)=(2x_1,2x_2,\dots,2x_n)$.
+
+Escaped delimiters should stay literal: \$x+y\$ and \$\$a+b\$\$.
+
+### Display math
+
+$$E=mc^2$$
+
+$$
+a^2+b^2=c^2
+$$
+
+### Fractions and radicals
+
+$$
+f(x)=\frac{\sqrt{x^2+1}}{x+1}
+$$
+
+### Limits
+
+$$
+\lim_{x\to0}\frac{\sin x}{x}=1
+$$
+
+### Sums and integrals
+
+$$
+\int_0^1 x^2\,dx=\frac13
+$$
+
+$$
+\sum_{i=1}^n i=\frac{n(n+1)}2
+$$
+
+### Matrices
+
+$$
+A=\begin{bmatrix}
+1&2&3\\
+4&5&6\\
+7&8&9
+\end{bmatrix}
+$$
+
+### Vectors and delimiters
+
+$$
+\vec a\cdot\vec b
+=|\vec a||\vec b|\cos\theta
+$$
+
+### Cases and piecewise functions
+
+$$
+\begin{cases}
+x+y=1\\
+2x-y=3
+\end{cases}
+$$
+
+### Aligned equations
+
+$$
+\begin{aligned}
+(a+b)^2&=a^2+2ab+b^2\\
+(a-b)^2&=a^2-2ab+b^2
+\end{aligned}
+$$
+
+### Equation environment
+
+$$
+\begin{equation}
+e^{i\pi}+1=0
+\end{equation}
+$$
+
+### Greek letters and symbols
+
+$$
+\alpha+\beta=\gamma
+$$
+
+$$
+\infty,\ \partial,\ \nabla,\ \aleph
+$$
+
+### Color
+
+$$
+\textcolor{blue}{E=mc^2}
+$$
+
+### Markdown mixed with math
+
+1. Newton's second law: $F=ma$
+2. Mass-energy equivalence: $E=mc^2$
+3. Euler's identity: $e^{i\pi}+1=0$
+
+> A blockquote with inline math $a^2+b^2=c^2$ and display math:
+>
+> $$
+> \int_0^1 x^2\,dx=\frac13
+> $$
+
+| Name | Left aligned formula | Center aligned formula | Right aligned formula |
+|---|:---|:---:|---:|
+| Short identity | $e^{i\pi}+1=0$ | $e^{i\pi}+1=0$ | $e^{i\pi}+1=0$ |
+| Longer expression | $P(A\mid B)=\frac{P(B\mid A)P(A)}{P(B)}$ | $P(A\mid B)=\frac{P(B\mid A)P(A)}{P(B)}$ | $P(A\mid B)=\frac{P(B\mid A)P(A)}{P(B)}$ |
+
+Indented display math in a list:
+
+1. A list item
+
+   $$
+   x^2+y^2=z^2
+   $$
+
+2. Another list item
+
+   $$
+   \int_0^1 x^2\,dx=\frac13
+   $$
+
+### Complex formula
+
+$$
+\sum_{i=1}^{n}
+\left(
+\frac{\sqrt{x_i^2+y_i^2}}{1+\int_0^1 t^2dt}
+\right)^2
+$$
+
 ## Unsupported
 
 ### HTML
@@ -238,17 +380,5 @@ This is paragraph of the heading 6.
 </div>
 </details>
 
-### Math
-
-This is an inline math $x^2 + y^2 = z^2$.
-
-This is a block math:
-
-$$
-\begin{aligned}
-x^2 + y^2 &= z^2 \\
-x^3 + y^3 &= z^3
-\end{aligned}
-$$
 
 This is final paragraph, it includes a code block and a list of items.

@@ -14,12 +14,15 @@ use markdown::mdast;
 use ropey::Rope;
 
 use crate::{
-    ActiveTheme as _, Icon, IconName, StyledExt, h_flex,
+    ActiveTheme as _, Icon, IconName, StyledExt,
+    global_state::GlobalState,
+    h_flex,
     highlighter::{HighlightTheme, SyntaxHighlighter},
     text::{
         CodeBlockActionsFn,
         document::NodeRenderOptions,
         inline::{Inline, InlineState},
+        math::MathNode,
     },
     tooltip::Tooltip,
     v_flex,
@@ -59,6 +62,7 @@ pub(crate) enum BlockNode {
         span: Option<Span>,
     },
     CodeBlock(CodeBlock),
+    Math(MathNode),
     Table(Table),
     Break {
         html: bool,
@@ -104,6 +108,7 @@ impl BlockNode {
             BlockNode::List { span, .. } => *span,
             BlockNode::ListItem { span, .. } => *span,
             BlockNode::CodeBlock(code_block) => code_block.span,
+            BlockNode::Math(math) => math.span(),
             BlockNode::Table(table) => table.span,
             BlockNode::Break { span, .. } => *span,
             BlockNode::HorizontalRule { span, .. } => *span,
@@ -182,6 +187,13 @@ impl BlockNode {
             }
             BlockNode::CodeBlock(code_block) => {
                 let block_text = code_block.selected_text();
+                if !block_text.is_empty() {
+                    text.push_str(&block_text);
+                    text.push('\n');
+                }
+            }
+            BlockNode::Math(math) => {
+                let block_text = math.selected_text();
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
                     text.push('\n');
@@ -308,6 +320,8 @@ pub(crate) struct InlineNode {
     /// The text content.
     pub(crate) text: SharedString,
     pub(crate) image: Option<ImageNode>,
+    pub(crate) math: Option<MathNode>,
+    pub(crate) line_break: bool,
     /// The text styles, each tuple contains the range of the text and the style.
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
@@ -316,7 +330,11 @@ pub(crate) struct InlineNode {
 
 impl PartialEq for InlineNode {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text && self.image == other.image && self.marks == other.marks
+        self.text == other.text
+            && self.image == other.image
+            && self.math == other.math
+            && self.line_break == other.line_break
+            && self.marks == other.marks
     }
 }
 
@@ -325,6 +343,8 @@ impl InlineNode {
         Self {
             text: text.into(),
             image: None,
+            math: None,
+            line_break: false,
             marks: vec![],
             state: Arc::new(Mutex::new(InlineState::default())),
         }
@@ -333,6 +353,18 @@ impl InlineNode {
     pub(crate) fn image(image: ImageNode) -> Self {
         let mut this = Self::new("");
         this.image = Some(image);
+        this
+    }
+
+    pub(crate) fn math(math: MathNode) -> Self {
+        let mut this = Self::new(math.source().clone());
+        this.math = Some(math);
+        this
+    }
+
+    pub(crate) fn line_break() -> Self {
+        let mut this = Self::new("\n");
+        this.line_break = true;
         this
     }
 
@@ -368,28 +400,53 @@ impl PartialEq for Paragraph {
 
 impl Paragraph {
     pub(crate) fn new(text: String) -> Self {
-        Self {
+        let mut paragraph = Self {
             span: None,
-            children: vec![InlineNode::new(&text)],
+            children: vec![],
             link_refs: HashMap::new(),
             state: Arc::new(Mutex::new(InlineState::default())),
-        }
+        };
+        paragraph.push_str(&text);
+        paragraph
     }
 
     pub(super) fn selected_text(&self) -> String {
         let mut text = String::new();
+        let mut pending_line_break = false;
 
         for c in self.children.iter() {
+            let mut selected = String::new();
+
             let state = c.state.lock().unwrap();
             if let Some(selection) = &state.selection {
                 let part_text = state.text.clone();
-                text.push_str(&part_text[selection.start..selection.end]);
+                selected.push_str(&part_text[selection.start..selection.end]);
+            }
+            drop(state);
+
+            if let Some(math) = &c.math {
+                selected.push_str(&math.selected_text());
+            }
+
+            if !selected.is_empty() {
+                if pending_line_break {
+                    text.push('\n');
+                    pending_line_break = false;
+                }
+                text.push_str(&selected);
+            }
+
+            if c.line_break && !text.is_empty() {
+                pending_line_break = true;
             }
         }
 
         let state = self.state.lock().unwrap();
         if let Some(selection) = &state.selection {
             let all_text = state.text.clone();
+            if pending_line_break {
+                text.push('\n');
+            }
             text.push_str(&all_text[selection.start..selection.end]);
         }
 
@@ -462,9 +519,21 @@ impl Paragraph {
     }
 
     pub(crate) fn push_str(&mut self, text: &str) {
-        self.children.push(
-            InlineNode::new(text.to_string()).marks(vec![(0..text.len(), TextMark::default())]),
-        );
+        let mut start = 0;
+
+        for (ix, ch) in text.char_indices() {
+            if ch == '\n' {
+                if start < ix {
+                    self.push_text_segment(&text[start..ix]);
+                }
+                self.children.push(InlineNode::line_break());
+                start = ix + ch.len_utf8();
+            }
+        }
+
+        if start < text.len() {
+            self.push_text_segment(&text[start..]);
+        }
     }
 
     pub(crate) fn push(&mut self, text: InlineNode) {
@@ -475,12 +544,20 @@ impl Paragraph {
         self.children.push(InlineNode::image(image));
     }
 
+    fn push_text_segment(&mut self, text: &str) {
+        self.children.push(
+            InlineNode::new(text.to_string()).marks(vec![(0..text.len(), TextMark::default())]),
+        );
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.children.is_empty()
-            || self
-                .children
-                .iter()
-                .all(|node| node.text.is_empty() && node.image.is_none())
+            || self.children.iter().all(|node| {
+                node.text.is_empty()
+                    && node.image.is_none()
+                    && node.math.is_none()
+                    && !node.line_break
+            })
     }
 
     /// Return length of children text.
@@ -623,15 +700,234 @@ impl PartialEq for NodeContext {
     }
 }
 
+fn resolved_link_mark(style: &TextMark, node_cx: &NodeContext) -> Option<LinkMark> {
+    let mut link = style.link.clone()?;
+    if let Some(identifier) = link.identifier.as_ref()
+        && let Some(mark) = node_cx.link_refs.get(identifier)
+    {
+        link = mark.clone();
+    }
+    Some(link)
+}
+
+fn inline_node_link(node: &InlineNode, node_cx: &NodeContext) -> Option<LinkMark> {
+    node.marks
+        .iter()
+        .find_map(|(_, style)| resolved_link_mark(style, node_cx))
+}
+
+fn text_view_has_selection(cx: &mut App) -> bool {
+    let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
+        return false;
+    };
+
+    text_view_state.read(cx).has_selection()
+}
+
+fn inline_node_has_content(node: &InlineNode) -> bool {
+    !node.line_break && (node.math.is_some() || node.image.is_some() || !node.text.is_empty())
+}
+
+fn inline_node_can_join_math_cluster(node: &InlineNode) -> bool {
+    !node.line_break
+        && node.image.is_none()
+        && node.math.is_none()
+        && node
+            .text
+            .chars()
+            .next()
+            .is_some_and(|ch| !ch.is_whitespace())
+}
+
+fn inline_node_styles_for_range(
+    node: &InlineNode,
+    text_range: Range<usize>,
+    offset: usize,
+    node_cx: &NodeContext,
+    cx: &mut App,
+) -> (
+    Vec<(Range<usize>, HighlightStyle)>,
+    Vec<(Range<usize>, LinkMark)>,
+) {
+    let mut highlights = vec![];
+    let mut links = vec![];
+
+    for (range, style) in &node.marks {
+        let start = range.start.max(text_range.start);
+        let end = range.end.min(text_range.end);
+        if start >= end {
+            continue;
+        }
+
+        let inner_range = (offset + start - text_range.start)..(offset + end - text_range.start);
+
+        let mut highlight = HighlightStyle::default();
+        if style.bold {
+            highlight.font_weight = Some(FontWeight::BOLD);
+        }
+        if style.italic {
+            highlight.font_style = Some(FontStyle::Italic);
+        }
+        if style.strikethrough {
+            highlight.strikethrough = Some(gpui::StrikethroughStyle {
+                thickness: gpui::px(1.),
+                ..Default::default()
+            });
+        }
+        if style.underline {
+            highlight.underline = Some(gpui::UnderlineStyle {
+                thickness: gpui::px(1.),
+                ..Default::default()
+            });
+        }
+        if style.code {
+            highlight.background_color = Some(cx.theme().accent);
+        }
+
+        if let Some(link_mark) = resolved_link_mark(style, node_cx) {
+            highlight.color = Some(cx.theme().link);
+            highlight.underline = Some(gpui::UnderlineStyle {
+                thickness: gpui::px(1.),
+                ..Default::default()
+            });
+            links.push((inner_range.clone(), link_mark));
+        }
+
+        highlights.push((inner_range, highlight));
+    }
+
+    (highlights, links)
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct InlineMarkdownStyle {
+    bold: bool,
+    italic: bool,
+    strikethrough: bool,
+    code: bool,
+}
+
+impl InlineMarkdownStyle {
+    fn from_mark(mark: &TextMark) -> Self {
+        Self {
+            bold: mark.bold,
+            italic: mark.italic,
+            strikethrough: mark.strikethrough,
+            code: mark.code,
+        }
+    }
+
+    fn apply(&self, mut text: String) -> String {
+        if self.code {
+            text = format!("`{}`", text);
+        }
+        if self.bold {
+            text = format!("**{}**", text);
+        }
+        if self.italic {
+            text = format!("*{}*", text);
+        }
+        if self.strikethrough {
+            text = format!("~~{}~~", text);
+        }
+        text
+    }
+}
+
+fn full_range_mark(node: &InlineNode) -> Option<&TextMark> {
+    node.marks
+        .iter()
+        .find(|(range, _)| range.start == 0 && range.end == node.text.len())
+        .map(|(_, mark)| mark)
+}
+
+struct PendingMarkdown {
+    style: InlineMarkdownStyle,
+    text: String,
+    link: Option<(LinkMark, String)>,
+}
+
+impl PendingMarkdown {
+    fn new(style: InlineMarkdownStyle) -> Self {
+        Self {
+            style,
+            text: String::new(),
+            link: None,
+        }
+    }
+
+    fn push(&mut self, segment: String, link: Option<LinkMark>) {
+        if let Some(link) = link {
+            if let Some((pending_link, pending_text)) = self.link.as_mut()
+                && *pending_link == link
+            {
+                pending_text.push_str(&segment);
+                return;
+            }
+
+            self.flush_link();
+            self.link = Some((link, segment));
+        } else {
+            self.flush_link();
+            self.text.push_str(&segment);
+        }
+    }
+
+    fn flush_link(&mut self) {
+        if let Some((link, pending_text)) = self.link.take() {
+            self.text
+                .push_str(&format!("[{}]({})", pending_text, link.url));
+        }
+    }
+
+    fn finish(mut self) -> String {
+        self.flush_link();
+        self.style.apply(self.text)
+    }
+}
+
+fn push_markdown_segment(
+    text: &mut String,
+    pending: &mut Option<PendingMarkdown>,
+    segment: String,
+    link: Option<LinkMark>,
+    style: InlineMarkdownStyle,
+) {
+    if let Some(pending) = pending.as_mut()
+        && pending.style == style
+    {
+        pending.push(segment, link);
+        return;
+    }
+
+    if let Some(pending) = pending.take() {
+        text.push_str(&pending.finish());
+    }
+
+    let mut next = PendingMarkdown::new(style);
+    next.push(segment, link);
+    *pending = Some(next);
+}
+
 impl Paragraph {
     fn render(
         &self,
+        options: NodeRenderOptions,
         node_cx: &NodeContext,
         _window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
         let span = self.span;
         let children = &self.children;
+        let has_inline_math = children.iter().any(|node| node.math.is_some());
+        let is_inline_math_only = has_inline_math
+            && children.iter().all(|node| {
+                if node.math.is_some() {
+                    node.image.is_none() && !node.line_break
+                } else {
+                    node.text.trim().is_empty() && node.image.is_none() && !node.line_break
+                }
+            });
 
         let mut child_nodes: Vec<AnyElement> = vec![];
 
@@ -640,10 +936,180 @@ impl Paragraph {
         let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
         let mut offset = 0;
 
-        let mut ix = 0;
-        for inline_node in children {
-            let text_len = inline_node.text.len();
-            text.push_str(&inline_node.text);
+        let mut ix = 0usize;
+        let mut last_child_was_break = false;
+        let mut skip_until_child = 0;
+        for (child_ix, inline_node) in children.iter().enumerate() {
+            if child_ix < skip_until_child {
+                continue;
+            }
+
+            if has_inline_math && inline_node.line_break {
+                if text.len() > 0 {
+                    inline_node
+                        .state
+                        .lock()
+                        .unwrap()
+                        .set_text(text.clone().into());
+                    child_nodes.push(
+                        Inline::new(
+                            ix,
+                            inline_node.state.clone(),
+                            links.clone(),
+                            highlights.clone(),
+                        )
+                        .into_any_element(),
+                    );
+                }
+
+                child_nodes.push(div().w_full().h(px(0.)).into_any_element());
+                text.clear();
+                links.clear();
+                highlights.clear();
+                offset = 0;
+                ix += 1;
+                last_child_was_break = true;
+                continue;
+            }
+
+            if let Some(math) = &inline_node.math {
+                let link = inline_node_link(inline_node, node_cx);
+                let should_wrap_math =
+                    math.is_display() || link.is_some() || (options.in_list && is_inline_math_only);
+
+                let mut cluster: Vec<AnyElement> = vec![];
+                if text.len() > 0 {
+                    inline_node
+                        .state
+                        .lock()
+                        .unwrap()
+                        .set_text(text.clone().into());
+                    child_nodes.push(
+                        Inline::new(
+                            ix,
+                            inline_node.state.clone(),
+                            links.clone(),
+                            highlights.clone(),
+                        )
+                        .into_any_element(),
+                    );
+                    last_child_was_break = false;
+                }
+
+                if should_wrap_math {
+                    if math.is_display() && !child_nodes.is_empty() && !last_child_was_break {
+                        child_nodes.push(div().w_full().h(px(0.)).into_any_element());
+                    }
+
+                    let has_selection = text_view_has_selection(cx);
+                    child_nodes.push(
+                        div()
+                            .id(("math-link", ix))
+                            .when(math.is_display(), |this| {
+                                this.w_full().flex().justify_center()
+                            })
+                            .when(options.in_list && is_inline_math_only, |this| {
+                                this.mt(px(6.))
+                            })
+                            .when_some(link, |this, link| {
+                                let this = this.text_color(cx.theme().link).cursor_pointer();
+                                if has_selection {
+                                    this
+                                } else {
+                                    this.on_click(move |_, _, cx| {
+                                        if text_view_has_selection(cx) {
+                                            return;
+                                        }
+
+                                        cx.stop_propagation();
+                                        cx.open_url(&link.url);
+                                    })
+                                }
+                            })
+                            .child(math.render())
+                            .into_any_element(),
+                    );
+
+                    if math.is_display()
+                        && children[child_ix + 1..].iter().any(inline_node_has_content)
+                    {
+                        child_nodes.push(div().w_full().h(px(0.)).into_any_element());
+                        last_child_was_break = true;
+                    } else {
+                        last_child_was_break = false;
+                    }
+                } else {
+                    cluster.push(math.render().into_any_element());
+                    let mut next_ix = child_ix + 1;
+                    while let Some(next_node) = children.get(next_ix) {
+                        if inline_node_can_join_math_cluster(next_node) {
+                            next_node
+                                .state
+                                .lock()
+                                .unwrap()
+                                .set_text(next_node.text.clone());
+                            let (highlights, links) = inline_node_styles_for_range(
+                                next_node,
+                                0..next_node.text.len(),
+                                0,
+                                node_cx,
+                                cx,
+                            );
+                            cluster.push(
+                                Inline::new(
+                                    ElementId::Name(
+                                        format!("inline-math-text-{ix}-{next_ix}").into(),
+                                    ),
+                                    next_node.state.clone(),
+                                    links,
+                                    highlights,
+                                )
+                                .into_any_element(),
+                            );
+                            next_ix += 1;
+                            continue;
+                        }
+
+                        let Some(next_math) = &next_node.math else {
+                            break;
+                        };
+                        if next_math.is_display() || inline_node_link(next_node, node_cx).is_some()
+                        {
+                            break;
+                        }
+
+                        cluster.push(next_math.render().into_any_element());
+                        next_ix += 1;
+                    }
+
+                    if cluster.len() > 1 {
+                        child_nodes.push(
+                            div()
+                                .id(("inline-math", ix))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .min_w_0()
+                                .children(cluster)
+                                .into_any_element(),
+                        );
+                        skip_until_child = next_ix;
+                    } else {
+                        child_nodes.push(math.render().into_any_element());
+                    }
+                    last_child_was_break = false;
+                }
+                text.clear();
+                links.clear();
+                highlights.clear();
+                offset = 0;
+                ix += 1;
+                continue;
+            }
+
+            let node_text = &inline_node.text;
+            let text_len = node_text.len();
+            text.push_str(node_text);
 
             if let Some(image) = &inline_node.image {
                 if text.len() > 0 {
@@ -681,59 +1147,21 @@ impl Paragraph {
                         })
                         .into_any_element(),
                 );
+                last_child_was_break = false;
 
                 text.clear();
                 links.clear();
                 highlights.clear();
                 offset = 0;
             } else {
-                let mut node_highlights = vec![];
-                for (range, style) in &inline_node.marks {
-                    let inner_range = (offset + range.start)..(offset + range.end);
-
-                    let mut highlight = HighlightStyle::default();
-                    if style.bold {
-                        highlight.font_weight = Some(FontWeight::BOLD);
-                    }
-                    if style.italic {
-                        highlight.font_style = Some(FontStyle::Italic);
-                    }
-                    if style.strikethrough {
-                        highlight.strikethrough = Some(gpui::StrikethroughStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.underline {
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.code {
-                        highlight.background_color = Some(cx.theme().accent);
-                    }
-
-                    if let Some(mut link_mark) = style.link.clone() {
-                        highlight.color = Some(cx.theme().link);
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-
-                        // convert link references, replace link
-                        if let Some(identifier) = link_mark.identifier.as_ref() {
-                            if let Some(mark) = node_cx.link_refs.get(identifier) {
-                                link_mark = mark.clone();
-                            }
-                        }
-
-                        links.push((inner_range.clone(), link_mark));
-                    }
-
-                    node_highlights.push((inner_range, highlight));
-                }
-
+                let (node_highlights, node_links) = inline_node_styles_for_range(
+                    inline_node,
+                    0..inline_node.text.len(),
+                    offset,
+                    node_cx,
+                    cx,
+                );
+                links.extend(node_links);
                 highlights = gpui::combine_highlights(highlights, node_highlights).collect();
                 offset += text_len;
             }
@@ -747,48 +1175,89 @@ impl Paragraph {
                 .push(Inline::new(ix, self.state.clone(), links, highlights).into_any_element());
         }
 
-        div().id(span.unwrap_or_default()).children(child_nodes)
+        div()
+            .id(span.unwrap_or_default())
+            .when(has_inline_math, |this| {
+                let this = this.flex().flex_row().flex_wrap().items_center();
+                match options.column_align {
+                    ColumnumnAlign::Center => this.justify_center(),
+                    ColumnumnAlign::Right => this.justify_end(),
+                    ColumnumnAlign::Left => this,
+                }
+            })
+            .children(child_nodes)
     }
 }
 
 impl Paragraph {
     fn to_markdown(&self) -> String {
-        let mut text = self
-            .children
-            .iter()
-            .map(|text_node| {
-                let mut text = text_node.text.to_string();
-                for (range, style) in &text_node.marks {
-                    if style.bold {
-                        text = format!("**{}**", &text_node.text[range.clone()]);
-                    }
-                    if style.italic {
-                        text = format!("*{}*", &text_node.text[range.clone()]);
-                    }
-                    if style.strikethrough {
-                        text = format!("~~{}~~", &text_node.text[range.clone()]);
-                    }
-                    if style.code {
-                        text = format!("`{}`", &text_node.text[range.clone()]);
-                    }
-                    if let Some(link) = &style.link {
-                        text = format!("[{}]({})", &text_node.text[range.clone()], link.url);
-                    }
-                }
+        let mut text = String::new();
+        let mut pending = None;
 
-                if let Some(image) = &text_node.image {
-                    let alt = image.alt.clone().unwrap_or_default();
-                    let title = image
-                        .title
-                        .clone()
-                        .map_or(String::new(), |t| format!(" \"{}\"", t));
-                    text.push_str(&format!("![{}]({}{})", alt, image.url, title))
-                }
+        for text_node in &self.children {
+            let (segment, link, style) = {
+                if let Some(math) = &text_node.math {
+                    let text = math.markdown_source().to_string();
+                    let (link, style) = full_range_mark(text_node)
+                        .map(|mark| (mark.link.clone(), InlineMarkdownStyle::from_mark(mark)))
+                        .unwrap_or_default();
+                    (text, link, style)
+                } else {
+                    let mut text = text_node.text.to_string();
+                    let mut link = None;
+                    let mut markdown_style = InlineMarkdownStyle::default();
+                    for (range, style) in &text_node.marks {
+                        if range.start == 0 && range.end == text_node.text.len() {
+                            if let Some(mark) = &style.link {
+                                markdown_style = InlineMarkdownStyle::from_mark(style);
+                                link = Some(mark.clone());
+                                text = text_node.text[range.clone()].to_string();
+                                continue;
+                            }
+                            if text_node.marks.len() == 1 {
+                                markdown_style = InlineMarkdownStyle::from_mark(style);
+                                text = text_node.text[range.clone()].to_string();
+                                continue;
+                            }
+                        }
 
-                text
-            })
-            .collect::<Vec<_>>()
-            .join("");
+                        if style.bold {
+                            text = format!("**{}**", &text_node.text[range.clone()]);
+                        }
+                        if style.italic {
+                            text = format!("*{}*", &text_node.text[range.clone()]);
+                        }
+                        if style.strikethrough {
+                            text = format!("~~{}~~", &text_node.text[range.clone()]);
+                        }
+                        if style.code {
+                            text = format!("`{}`", &text_node.text[range.clone()]);
+                        }
+                        if let Some(mark) = &style.link {
+                            link = Some(mark.clone());
+                            text = text_node.text[range.clone()].to_string();
+                        }
+                    }
+
+                    if let Some(image) = &text_node.image {
+                        let alt = image.alt.clone().unwrap_or_default();
+                        let title = image
+                            .title
+                            .clone()
+                            .map_or(String::new(), |t| format!(" \"{}\"", t));
+                        text.push_str(&format!("![{}]({}{})", alt, image.url, title))
+                    }
+
+                    (text, link, markdown_style)
+                }
+            };
+
+            push_markdown_segment(&mut text, &mut pending, segment, link, style);
+        }
+
+        if let Some(pending) = pending {
+            text.push_str(&pending.finish());
+        }
 
         text.push_str("\n\n");
         text
@@ -867,6 +1336,7 @@ impl BlockNode {
                     code_block.code()
                 )
             }
+            BlockNode::Math(math) => math.markdown_source().to_string(),
             BlockNode::Table(table) => {
                 let header = table
                     .children
@@ -959,7 +1429,7 @@ impl BlockNode {
 
                     for (child_ix, child) in children.iter().enumerate() {
                         match child {
-                            BlockNode::Paragraph { .. } => {
+                            BlockNode::Paragraph(_) => {
                                 let last_not_list = child_ix > 0
                                     && !matches!(children[child_ix - 1], BlockNode::List { .. });
 
@@ -967,6 +1437,7 @@ impl BlockNode {
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
+                                        in_list: true,
                                         is_last: true,
                                         ..options
                                     },
@@ -975,7 +1446,7 @@ impl BlockNode {
                                     cx,
                                 );
 
-                                // Continuation paragraph — stack vertically below
+                                // Continuation paragraph: stack vertically below
                                 // the previous row, indented to align with the text
                                 // column (past bullet/number prefix).
                                 if last_not_list {
@@ -1041,6 +1512,7 @@ impl BlockNode {
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
+                                        in_list: true,
                                         is_last: true,
                                         ..options
                                     },
@@ -1048,6 +1520,72 @@ impl BlockNode {
                                     window,
                                     cx,
                                 )));
+                            }
+                            BlockNode::Math(_) => {
+                                let text = child.render_block(
+                                    NodeRenderOptions {
+                                        depth: options.depth + 1,
+                                        todo: checked.is_some(),
+                                        in_list: true,
+                                        is_last: true,
+                                        ..options
+                                    },
+                                    node_cx,
+                                    window,
+                                    cx,
+                                );
+
+                                if child_ix == 0 {
+                                    items.push(
+                                        h_flex()
+                                            .w_full()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .relative()
+                                            .items_start()
+                                            .content_start()
+                                            .when(!options.todo && checked.is_none(), |this| {
+                                                this.child(list_item_prefix(
+                                                    ix,
+                                                    options.ordered,
+                                                    options.depth,
+                                                ))
+                                            })
+                                            .when_some(*checked, |this, checked| {
+                                                this.child(
+                                                    div()
+                                                        .flex()
+                                                        .mt(rems(0.4))
+                                                        .mr_1p5()
+                                                        .size(rems(0.875))
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .rounded(cx.theme().radius.half())
+                                                        .border_1()
+                                                        .border_color(cx.theme().primary)
+                                                        .text_color(cx.theme().primary_foreground)
+                                                        .when(checked, |this| {
+                                                            this.bg(cx.theme().primary).child(
+                                                                Icon::new(IconName::Check)
+                                                                    .size_2()
+                                                                    .text_xs(),
+                                                            )
+                                                        }),
+                                                )
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .child(text),
+                                            ),
+                                    );
+                                } else {
+                                    items.push(
+                                        div().w_full().pl(rems(0.75)).overflow_hidden().child(text),
+                                    );
+                                }
                             }
                             _ => {}
                         }
@@ -1144,10 +1682,15 @@ impl BlockNode {
                                                             this.border_r_1()
                                                                 .border_color(cx.theme().border)
                                                         })
-                                                        .child(
-                                                            cell.children
-                                                                .render(node_cx, window, cx),
-                                                        ),
+                                                        .child(cell.children.render(
+                                                            NodeRenderOptions {
+                                                                column_align: align,
+                                                                ..*options
+                                                            },
+                                                            node_cx,
+                                                            window,
+                                                            cx,
+                                                        )),
                                                 )
                                             }
                                             cells
@@ -1186,7 +1729,7 @@ impl BlockNode {
             BlockNode::Paragraph(paragraph) => div()
                 .id(("p", ix))
                 .pb(mb)
-                .child(paragraph.render(node_cx, window, cx))
+                .child(paragraph.render(options, node_cx, window, cx))
                 .into_any_element(),
             BlockNode::Heading {
                 level, children, ..
@@ -1212,7 +1755,7 @@ impl BlockNode {
                     .whitespace_normal()
                     .text_size(text_size)
                     .font_weight(font_weight)
-                    .child(children.render(node_cx, window, cx))
+                    .child(children.render(options, node_cx, window, cx))
                     .into_any_element()
             }
             BlockNode::Blockquote { children, .. } => div()
@@ -1267,6 +1810,14 @@ impl BlockNode {
                 })
                 .into_any_element(),
             BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
+            BlockNode::Math(math) => div()
+                .id(("math", ix))
+                .w_full()
+                .pb(mb)
+                .flex()
+                .justify_center()
+                .child(math.render())
+                .into_any_element(),
             BlockNode::Table { .. } => {
                 Self::render_table(self, &options, node_cx, window, cx).into_any_element()
             }
@@ -1284,5 +1835,106 @@ impl BlockNode {
                 div().into_any_element()
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "markdown-math"))]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn test_selected_text_preserves_text_before_inline_math() {
+        let math = MathNode::try_new("x^2", false).unwrap();
+        math.select_all_for_test();
+
+        let mut paragraph = Paragraph::default();
+        paragraph.push_str("before ");
+        paragraph.push(InlineNode::math(math));
+
+        let math_ix = paragraph
+            .children
+            .iter()
+            .position(|child| child.math.is_some())
+            .unwrap();
+        let mut state = paragraph.children[math_ix].state.lock().unwrap();
+        state.set_text("before ".into());
+        state.selection = Some((0.."before ".len()).into());
+        drop(state);
+
+        assert_eq!(paragraph.selected_text(), "before $x^2$");
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn test_selected_text_preserves_line_break_around_inline_math() {
+        let math = MathNode::try_new("x^2", false).unwrap();
+        math.select_all_for_test();
+
+        let mut paragraph = Paragraph::default();
+        paragraph.push_str("before");
+        paragraph.push(InlineNode::math(math));
+        paragraph.push(InlineNode::line_break());
+        paragraph.push_str("after");
+
+        paragraph.children[1]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("before".into());
+        paragraph.children[1].state.lock().unwrap().selection = Some((0.."before".len()).into());
+
+        paragraph.children[2]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("".into());
+
+        paragraph.children[3]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("after".into());
+        paragraph.children[3].state.lock().unwrap().selection = Some((0.."after".len()).into());
+
+        assert_eq!(paragraph.selected_text(), "before$x^2$\nafter");
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn test_selected_text_preserves_text_around_inline_math() {
+        let math = MathNode::try_new("x^2", false).unwrap();
+        math.select_all_for_test();
+
+        let mut paragraph = Paragraph::default();
+        paragraph.push_str("text（");
+        paragraph.push(InlineNode::math(math));
+        paragraph.push_str("）after");
+
+        paragraph.children[0]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("text".into());
+        paragraph.children[0].state.lock().unwrap().selection = Some((0.."text".len()).into());
+
+        paragraph.children[1]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("（".into());
+        paragraph.children[1].state.lock().unwrap().selection = Some((0.."（".len()).into());
+
+        paragraph.children[2]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("）".into());
+        paragraph.children[2].state.lock().unwrap().selection = Some((0.."）".len()).into());
+
+        paragraph.state.lock().unwrap().set_text("after".into());
+        paragraph.state.lock().unwrap().selection = Some((0.."after".len()).into());
+
+        assert_eq!(paragraph.selected_text(), "text（$x^2$）after");
     }
 }
