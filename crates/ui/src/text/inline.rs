@@ -351,7 +351,8 @@ fn align_paragraph_inline_prefix(layout: &mut ParagraphInlineComputed) {
         }
         ParagraphInlinePrefix::Marker { .. } => {}
         ParagraphInlinePrefix::Todo { y, size, .. } => {
-            *y = line.y + line.ascent - *size;
+            let line_height = line.ascent + line.descent;
+            *y = line.y + (line_height - *size) / 2.;
         }
     }
 }

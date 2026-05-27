@@ -436,6 +436,63 @@ fn ast_to_document(root: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> Par
     }
 }
 
+/// Setext heading false-positive inside list items: the markdown parser may
+/// interpret `- [x] text\n  -` as a Heading inside a ListItem because it treats
+/// the lone `-` on the continuation line as a setext underline. Since real
+/// headings don't appear as list-item children, demote them to paragraphs and
+/// recover the checkbox state that the parser missed.
+fn fix_setext_false_positive_in_list_item(
+    children: &mut Vec<BlockNode>,
+    checked: &mut Option<bool>,
+) {
+    for child in children.iter_mut() {
+        if let BlockNode::Heading { children: paragraph, .. } = child {
+            // When the heading text starts with a checkbox marker like
+            // "[x] " or "[ ] ", recover the checked state.
+            if checked.is_none() {
+                if let Some((is_checked, stripped_len)) =
+                    detect_checkbox_prefix(paragraph)
+                {
+                    *checked = Some(is_checked);
+                    strip_paragraph_prefix(paragraph, stripped_len);
+                }
+            }
+            *child = BlockNode::Paragraph(paragraph.take());
+        }
+    }
+}
+
+/// Detect "[x] " or "[ ] " at the start of a paragraph's text.
+/// Returns (is_checked, byte_count_to_strip) if found.
+fn detect_checkbox_prefix(paragraph: &Paragraph) -> Option<(bool, usize)> {
+    let first = paragraph.children.first()?;
+    let text = first.text.as_ref();
+    if let Some(rest) = text.strip_prefix("[x] ") {
+        Some((true, text.len() - rest.len()))
+    } else if let Some(rest) = text.strip_prefix("[ ] ") {
+        Some((false, text.len() - rest.len()))
+    } else {
+        None
+    }
+}
+
+/// Strip `count` bytes from the beginning of the first text node in the
+/// paragraph.
+fn strip_paragraph_prefix(paragraph: &mut Paragraph, count: usize) {
+    let Some(first) = paragraph.children.first_mut() else {
+        return;
+    };
+    let prefix_len = count.min(first.text.len());
+    let new_text: SharedString = first.text[prefix_len..].to_string().into();
+    first.text = new_text;
+    // Shift all marks to account for the removed prefix
+    for (range, _) in &mut first.marks {
+        range.start = range.start.saturating_sub(prefix_len);
+        range.end = range.end.saturating_sub(prefix_len);
+    }
+    first.marks.retain(|(range, _)| range.end > 0);
+}
+
 fn ast_to_node(value: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> BlockNode {
     match value {
         Node::Root(_) => unreachable!("node::Root should be handled separately"),
@@ -471,15 +528,22 @@ fn ast_to_node(value: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> BlockN
             }
         }
         Node::ListItem(val) => {
-            let children = val
+            let mut children: Vec<BlockNode> = val
                 .children
                 .into_iter()
                 .map(|c| ast_to_node(c, ctx))
                 .collect();
+
+            // Setext heading false-positive: `- [x] text\n  -` can be parsed as
+            // a Heading inside a ListItem. Since headings don't belong inside
+            // list items, demote them to paragraphs.
+            let mut checked = val.checked;
+            fix_setext_false_positive_in_list_item(&mut children, &mut checked);
+
             BlockNode::ListItem {
                 children,
                 spread: val.spread,
-                checked: val.checked,
+                checked,
                 span: ctx.span(val.position),
             }
         }
@@ -977,6 +1041,85 @@ mod tests {
                 .iter()
                 .any(|child| matches!(child, BlockNode::Math(_))),
             "list item block math should parse to a math block node"
+        );
+    }
+
+    #[test]
+    fn test_todo_list_parses_with_nested_list() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "- [x] foefewigweg\n  - subtask",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::List { children, ordered, .. } = &document.blocks[0] else {
+            panic!("expected list, got {:?}", document.blocks[0]);
+        };
+        assert!(!ordered);
+
+        let BlockNode::ListItem {
+            children: item1_children,
+            checked, ..
+        } = &children[0] else {
+            panic!("expected list item");
+        };
+        assert_eq!(*checked, Some(true));
+
+        assert_eq!(item1_children.len(), 2);
+
+        let BlockNode::List { children: nested, .. } = &item1_children[1] else {
+            panic!("expected nested list as second child");
+        };
+        assert_eq!(nested.len(), 1);
+
+        let BlockNode::ListItem {
+            checked: nested_checked,
+            ..
+        } = &nested[0] else {
+            panic!("expected nested list item");
+        };
+        assert_eq!(*nested_checked, None);
+    }
+
+    #[test]
+    fn test_setext_heading_false_positive_demoted_to_paragraph() {
+        let mut cx = NodeContext::default();
+        // "- [x] text\n  -" triggers setext heading false-positive.
+        // The Heading should be demoted back to Paragraph.
+        let document = parse(
+            "- [x] foefewigweg\n  -",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::List { children, .. } = &document.blocks[0] else {
+            panic!("expected list");
+        };
+        let BlockNode::ListItem {
+            children: item_children,
+            checked,
+            ..
+        } = &children[0]
+        else {
+            panic!("expected list item");
+        };
+
+        // The checkbox should still be recognized
+        assert_eq!(*checked, Some(true));
+
+        // Children should contain a Paragraph (demoted from Heading), not a Heading
+        assert!(
+            item_children.iter().all(|c| !matches!(c, BlockNode::Heading { .. })),
+            "heading should have been demoted to paragraph"
+        );
+        assert!(
+            item_children
+                .iter()
+                .any(|c| matches!(c, BlockNode::Paragraph(_))),
+            "should have a paragraph child"
         );
     }
 

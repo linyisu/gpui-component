@@ -1073,13 +1073,12 @@ impl BlockNode {
                             checked,
                             visible: true,
                         }),
-                        None if !options.todo => Some(ListItemPrefix::Marker {
+                        None => Some(ListItemPrefix::Marker {
                             ix,
                             ordered: options.ordered,
                             depth: options.depth,
                             visible: true,
                         }),
-                        None => None,
                     };
                     let mut list_prefix = item_prefix;
                     let list_indent = item_prefix.map(ListItemPrefix::hidden);
@@ -1092,7 +1091,6 @@ impl BlockNode {
                                 let text = child.render_block(
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
-                                        todo: checked.is_some(),
                                         in_list: true,
                                         is_last: true,
                                         list_prefix: prefix,
@@ -1121,7 +1119,6 @@ impl BlockNode {
                                                 node_cx.clone(),
                                                 NodeRenderOptions {
                                                     depth: options.depth + 1,
-                                                    todo: checked.is_some(),
                                                     in_list: true,
                                                     is_last: true,
                                                     list_prefix: Some(prefix),
@@ -1136,7 +1133,6 @@ impl BlockNode {
                                 items.push(div().ml(rems(1.)).child(child.render_block(
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
-                                        todo: checked.is_some(),
                                         in_list: true,
                                         is_last: true,
                                         list_prefix: None,
@@ -1159,7 +1155,6 @@ impl BlockNode {
                                     node_cx.clone(),
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
-                                        todo: checked.is_some(),
                                         in_list: true,
                                         is_last: true,
                                         list_prefix: prefix,
@@ -1170,7 +1165,22 @@ impl BlockNode {
 
                                 items.push(div().w_full().min_w_0().overflow_hidden().child(text));
                             }
-                            _ => {}
+                            _ => {
+                                let prefix = list_prefix.take().or(list_indent);
+                                let text = child.render_block(
+                                    NodeRenderOptions {
+                                        depth: options.depth + 1,
+                                        in_list: true,
+                                        is_last: true,
+                                        list_prefix: prefix,
+                                        ..options
+                                    },
+                                    node_cx,
+                                    window,
+                                    cx,
+                                );
+                                items.push(div().w_full().min_w_0().overflow_hidden().child(text));
+                            }
                         }
                     }
                     items

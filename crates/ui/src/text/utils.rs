@@ -36,7 +36,7 @@ pub(super) fn list_item_prefix(ix: usize, ordered: bool, depth: usize) -> String
     }
 }
 
-pub(super) fn normalize_runs_for_text(text: &str, runs: Vec<TextRun>) -> Vec<TextRun> {
+pub(crate) fn normalize_runs_for_text(text: &str, runs: Vec<TextRun>) -> Vec<TextRun> {
     if text.is_empty() {
         return vec![];
     }

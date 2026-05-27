@@ -6,7 +6,7 @@ mod node;
 mod state;
 mod style;
 mod text_view;
-mod utils;
+pub(crate) mod utils;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
 pub use state::*;

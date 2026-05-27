@@ -49,7 +49,6 @@ impl ListItemPrefix {
 pub(crate) struct NodeRenderOptions {
     pub(crate) ix: usize,
     pub(crate) in_list: bool,
-    pub(crate) todo: bool,
     pub(crate) ordered: bool,
     pub(crate) depth: usize,
     pub(crate) is_last: bool,

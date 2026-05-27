@@ -19,6 +19,7 @@ use crate::{
     button::{Button, ButtonVariants as _},
     input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout},
     scroll::Scrollbar,
+    text::utils::normalize_runs_for_text,
 };
 
 use super::{InputState, LastLayout, WhitespaceIndicators, mode::InputMode};
@@ -2154,44 +2155,6 @@ fn placeholder_line_runs<'a>(
     }
 
     result
-}
-
-fn normalize_runs_for_text(text: &str, runs: Vec<TextRun>) -> Vec<TextRun> {
-    if text.is_empty() {
-        return vec![];
-    }
-
-    let mut normalized = Vec::with_capacity(runs.len());
-    let mut offset = 0;
-
-    for run in runs {
-        if offset >= text.len() {
-            break;
-        }
-
-        let mut end = offset.saturating_add(run.len).min(text.len());
-        while end < text.len() && !text.is_char_boundary(end) {
-            end += 1;
-        }
-
-        if end <= offset {
-            continue;
-        }
-
-        normalized.push(TextRun {
-            len: end - offset,
-            ..run
-        });
-        offset = end;
-    }
-
-    if offset < text.len() {
-        if let Some(last_run) = normalized.last_mut() {
-            last_run.len += text.len() - offset;
-        }
-    }
-
-    normalized
 }
 
 /// Get the runs for the given range.
