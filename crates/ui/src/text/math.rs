@@ -1,3 +1,13 @@
+use gpui::{Pixels, Size};
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MathMetrics {
+    pub(crate) size: Size<Pixels>,
+    /// The baseline offset from the top of `size`.
+    pub(crate) ascent: Pixels,
+    pub(crate) descent: Pixels,
+}
+
 #[cfg(feature = "markdown-math")]
 mod real {
     use std::sync::{Arc, Mutex};
@@ -5,7 +15,7 @@ mod real {
     use gpui::{
         App, Bounds, Element, ElementId, FillOptions, FillRule, GlobalElementId, Hsla,
         InspectorElementId, IntoElement, LayoutId, PathBuilder, PathStyle, Pixels, Rgba,
-        SharedString, Size, Style, TextRun, TextSystem, Window, fill, font, point, px, size,
+        SharedString, Style, TextRun, TextSystem, Window, fill, font, point, px, size,
     };
     use ratex_font::{FontId, katex_ttf_glyph_char};
     use ratex_layout::{LayoutOptions, layout, to_display_list};
@@ -107,6 +117,23 @@ mod real {
             MathElement::new(self.clone())
         }
 
+        pub(crate) fn layout_metrics(&self, window: &Window) -> super::MathMetrics {
+            MathElement::new(self.clone()).layout_for(window).1
+        }
+
+        pub(crate) fn paint_at(
+            &self,
+            bounds: Bounds<Pixels>,
+            text_color: Option<Hsla>,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            let element = MathElement::new(self.clone());
+            let (layout, _) = element.layout_for(window);
+            let text_color = text_color.unwrap_or_else(|| window.text_style().color);
+            element.paint_with_color(bounds, &layout, text_color, window, cx);
+        }
+
         pub(crate) fn markdown_source(&self) -> SharedString {
             self.markdown_source.clone()
         }
@@ -152,7 +179,7 @@ mod real {
             Self { node }
         }
 
-        fn layout_for(&self, window: &Window) -> (MathLayout, Size<Pixels>) {
+        fn layout_for(&self, window: &Window) -> (MathLayout, super::MathMetrics) {
             let font_size = window.text_style().font_size.to_pixels(window.rem_size());
             let em = if self.node.display {
                 font_size * 1.1
@@ -162,10 +189,18 @@ mod real {
             let padding = MATH_PADDING;
             let em_px = f32::from(em);
             let width = px((self.node.display_list.width as f32 * em_px).max(1.)) + padding * 2.;
-            let height =
-                px((self.node.display_list.total_height() as f32 * em_px).max(1.)) + padding * 2.;
+            let ascent = px((self.node.display_list.height as f32 * em_px).max(0.)) + padding;
+            let descent = px((self.node.display_list.depth as f32 * em_px).max(0.)) + padding;
+            let height = (ascent + descent).max(px(1.));
 
-            (MathLayout { em, padding }, size(width, height))
+            (
+                MathLayout { em, padding },
+                super::MathMetrics {
+                    size: size(width, height),
+                    ascent,
+                    descent,
+                },
+            )
         }
 
         fn update_selection(&self, bounds: Bounds<Pixels>, window: &Window, cx: &mut App) -> bool {
@@ -195,6 +230,24 @@ mod real {
             is_selected
         }
 
+        fn paint_with_color(
+            &self,
+            bounds: Bounds<Pixels>,
+            layout: &MathLayout,
+            text_color: Hsla,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            let origin = bounds.origin + point(layout.padding, layout.padding);
+
+            if self.update_selection(bounds, window, cx) {
+                window.paint_quad(fill(bounds, cx.theme().selection));
+            }
+
+            for item in &self.node.display_list.items {
+                paint_display_item(item, origin, layout.em, text_color, window);
+            }
+        }
     }
 
     fn bounds_intersects_selection(
@@ -275,10 +328,10 @@ mod real {
             window: &mut Window,
             cx: &mut App,
         ) -> (LayoutId, Self::RequestLayoutState) {
-            let (layout, size) = self.layout_for(window);
+            let (layout, metrics) = self.layout_for(window);
             let mut style = Style::default();
-            style.size.width = size.width.into();
-            style.size.height = size.height.into();
+            style.size.width = metrics.size.width.into();
+            style.size.height = metrics.size.height.into();
 
             (window.request_layout(style, [], cx), layout)
         }
@@ -304,16 +357,8 @@ mod real {
             window: &mut Window,
             cx: &mut App,
         ) {
-            let origin = bounds.origin + point(layout.padding, layout.padding);
             let text_color = window.text_style().color;
-
-            if self.update_selection(bounds, window, cx) {
-                window.paint_quad(fill(bounds, cx.theme().selection));
-            }
-
-            for item in &self.node.display_list.items {
-                paint_display_item(item, origin, layout.em, text_color, window);
-            }
+            self.paint_with_color(bounds, layout, text_color, window, cx);
         }
     }
 
@@ -906,7 +951,7 @@ pub(super) fn init(cx: &mut gpui::App) {
 
 #[cfg(not(feature = "markdown-math"))]
 mod no_math {
-    use gpui::{AnyElement, IntoElement, SharedString, div};
+    use gpui::{AnyElement, App, Bounds, Hsla, IntoElement, Pixels, SharedString, Window, div};
 
     use crate::text::node::Span;
 
@@ -953,6 +998,19 @@ mod no_math {
 
         pub(crate) fn render(&self) -> AnyElement {
             div().into_any_element()
+        }
+
+        pub(crate) fn layout_metrics(&self, _window: &Window) -> super::MathMetrics {
+            super::MathMetrics::default()
+        }
+
+        pub(crate) fn paint_at(
+            &self,
+            _bounds: Bounds<Pixels>,
+            _text_color: Option<Hsla>,
+            _window: &mut Window,
+            _cx: &mut App,
+        ) {
         }
 
         pub(crate) fn markdown_source(&self) -> SharedString {
