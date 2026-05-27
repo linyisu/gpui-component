@@ -12,6 +12,39 @@ pub(crate) struct ParsedDocument {
     pub(crate) blocks: Vec<BlockNode>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListItemPrefix {
+    Marker {
+        ix: usize,
+        ordered: bool,
+        depth: usize,
+        visible: bool,
+    },
+    Todo {
+        checked: bool,
+        visible: bool,
+    },
+}
+
+impl ListItemPrefix {
+    pub(crate) fn hidden(self) -> Self {
+        match self {
+            Self::Marker {
+                ix, ordered, depth, ..
+            } => Self::Marker {
+                ix,
+                ordered,
+                depth,
+                visible: false,
+            },
+            Self::Todo { checked, .. } => Self::Todo {
+                checked,
+                visible: false,
+            },
+        }
+    }
+}
+
 #[derive(Default, Clone, Copy)]
 pub(crate) struct NodeRenderOptions {
     pub(crate) ix: usize,
@@ -21,6 +54,7 @@ pub(crate) struct NodeRenderOptions {
     pub(crate) depth: usize,
     pub(crate) is_last: bool,
     pub(crate) column_align: ColumnumnAlign,
+    pub(crate) list_prefix: Option<ListItemPrefix>,
 }
 
 impl NodeRenderOptions {

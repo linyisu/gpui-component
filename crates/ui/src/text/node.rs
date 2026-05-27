@@ -9,22 +9,23 @@ use gpui::{
     FontWeight, GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId,
     InteractiveElement as _, IntoElement, LayoutId, Length, MouseUpEvent, ObjectFit, ParentElement,
     Pixels, Point, ShapedLine, SharedString, SharedUri, Size, StatefulInteractiveElement, Style,
-    Styled, StyledImage as _, TextAlign, TextRun, Window, div, fill, img, point,
+    Styled, StyledImage as _, TextAlign, TextRun, TextStyle, Window, div, fill, img, point,
     prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 use ropey::Rope;
+use unicode_linebreak::linebreaks;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     ActiveTheme as _, Icon, IconName, StyledExt,
     global_state::GlobalState,
-    h_flex,
     highlighter::{HighlightTheme, SyntaxHighlighter},
     text::{
         CodeBlockActionsFn,
-        document::NodeRenderOptions,
+        document::{ListItemPrefix, NodeRenderOptions},
         inline::{Inline, InlineState},
-        math::MathNode,
+        math::{MathMetrics, MathNode},
     },
     tooltip::Tooltip,
     v_flex,
@@ -841,6 +842,7 @@ struct ParagraphInlinePrepaint {
 
 #[derive(Default)]
 struct ParagraphInlineComputed {
+    prefix: Option<ParagraphInlinePrefix>,
     lines: Vec<ParagraphInlineLine>,
     size: Size<Pixels>,
 }
@@ -864,6 +866,28 @@ enum ParagraphInlineLayoutItem {
     Text(LaidOutInlineText),
     Image(LaidOutInlineImage),
     Math(LaidOutInlineMath),
+}
+
+struct ParagraphInlineFlowItem<'a> {
+    logical_end: usize,
+    width: Pixels,
+    kind: ParagraphInlineFlowItemKind<'a>,
+}
+
+enum ParagraphInlineFlowItemKind<'a> {
+    Text {
+        text: &'a ParagraphInlineText,
+        range: Range<usize>,
+    },
+    Image {
+        image: &'a ParagraphInlineImage,
+        size: Size<Pixels>,
+        metrics: InlineItemMetrics,
+    },
+    Math {
+        math: &'a ParagraphInlineMath,
+        metrics: MathMetrics,
+    },
 }
 
 struct LaidOutInlineText {
@@ -900,68 +924,112 @@ struct InlineItemMetrics {
     descent: Pixels,
 }
 
-const LIST_INLINE_MATH_TOP_PADDING: Pixels = px(0.);
-const LIST_INLINE_MATH_MARKER_TOP_MARGIN: Pixels = px(5.);
-
-fn inline_nodes_are_math_only(children: &[InlineNode]) -> bool {
-    children.iter().any(|node| node.math.is_some())
-        && children.iter().all(|node| {
-            if node.math.is_some() {
-                node.image.is_none() && !node.line_break
-            } else {
-                node.text.trim().is_empty() && node.image.is_none() && !node.line_break
-            }
-        })
+enum ParagraphInlinePrefix {
+    Marker {
+        y: Pixels,
+        width: Pixels,
+        height: Pixels,
+        line: Option<ShapedLine>,
+    },
+    Todo {
+        y: Pixels,
+        width: Pixels,
+        size: Pixels,
+        element: Option<AnyElement>,
+    },
 }
 
-fn list_item_prefix_element(
-    ix: usize,
-    ordered: bool,
-    depth: usize,
-    top_margin: Pixels,
-) -> AnyElement {
-    let prefix = list_item_prefix(ix, ordered, depth);
-    if top_margin > px(0.) {
-        div().mt(top_margin).child(prefix).into_any_element()
-    } else {
-        prefix.into_any_element()
+impl ParagraphInlinePrefix {
+    fn width(&self) -> Pixels {
+        match self {
+            Self::Marker { width, .. } | Self::Todo { width, .. } => *width,
+        }
     }
 }
 
-fn list_marker_top_margin(children: &[InlineNode], window: &Window) -> Pixels {
-    if children.iter().any(|node| node.image.is_some())
-        || !children.iter().any(|node| node.math.is_some())
-    {
-        return px(0.);
-    }
+const TODO_CHECKBOX_SIZE_REM: f32 = 0.875;
+const TODO_CHECKBOX_GAP_REM: f32 = 0.375;
+const INLINE_OBJECT_REPLACEMENT: char = '\u{fffc}';
 
-    let text_ascent = default_text_line_metrics(window).ascent;
-    let mut line_ascent = text_ascent;
-    let mut has_first_line_math = false;
-    for node in children {
-        if node.line_break {
-            break;
+fn paragraph_inline_prefix(
+    prefix: Option<ListItemPrefix>,
+    text_style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<ParagraphInlinePrefix> {
+    match prefix {
+        Some(ListItemPrefix::Marker {
+            ix,
+            ordered,
+            depth,
+            visible,
+        }) => {
+            let text = list_item_prefix(ix, ordered, depth);
+            let len = text.len();
+            let line = shape_inline_text(text.into(), &[], 0..len, text_style, window, cx);
+            Some(ParagraphInlinePrefix::Marker {
+                y: px(0.),
+                width: line.width(),
+                height: text_style.line_height_in_pixels(window.rem_size()),
+                line: visible.then_some(line),
+            })
         }
-
-        if let Some(math) = &node.math {
-            has_first_line_math = true;
-            line_ascent = line_ascent.max(math.layout_metrics(window).ascent);
-            if math.is_display() {
-                break;
-            }
+        Some(ListItemPrefix::Todo { checked, visible }) => {
+            let size = rems(TODO_CHECKBOX_SIZE_REM).to_pixels(window.rem_size());
+            let gap = rems(TODO_CHECKBOX_GAP_REM).to_pixels(window.rem_size());
+            Some(ParagraphInlinePrefix::Todo {
+                y: px(0.),
+                width: size + gap,
+                size,
+                element: visible.then(|| todo_checkbox_element(checked, cx)),
+            })
         }
+        None => None,
     }
-    if !has_first_line_math {
-        return px(0.);
-    }
+}
 
-    let top_padding = if inline_nodes_are_math_only(children) {
-        LIST_INLINE_MATH_TOP_PADDING
-    } else {
-        px(0.)
+fn align_paragraph_inline_prefix(layout: &mut ParagraphInlineComputed) {
+    let Some(line) = layout.lines.first() else {
+        return;
+    };
+    let Some(prefix) = &mut layout.prefix else {
+        return;
     };
 
-    (top_padding + LIST_INLINE_MATH_MARKER_TOP_MARGIN + line_ascent - text_ascent).max(px(0.))
+    match prefix {
+        ParagraphInlinePrefix::Marker {
+            y,
+            height,
+            line: Some(marker),
+            ..
+        } => {
+            let metrics = shaped_text_line_metrics(marker, *height);
+            *y = line.y + line.ascent - metrics.ascent;
+        }
+        ParagraphInlinePrefix::Marker { .. } => {}
+        ParagraphInlinePrefix::Todo { y, size, .. } => {
+            *y = line.y + ((line.ascent + line.descent - *size) / 2.).max(px(0.));
+        }
+    }
+}
+
+fn todo_checkbox_element(checked: bool, cx: &mut App) -> AnyElement {
+    let size = rems(TODO_CHECKBOX_SIZE_REM);
+
+    div()
+        .flex()
+        .size(size)
+        .items_center()
+        .justify_center()
+        .rounded(cx.theme().radius.half())
+        .border_1()
+        .border_color(cx.theme().primary)
+        .text_color(cx.theme().primary_foreground)
+        .when(checked, |this| {
+            this.bg(cx.theme().primary)
+                .child(Icon::new(IconName::Check).size_2().text_xs())
+        })
+        .into_any_element()
 }
 
 impl ParagraphInlineLayout {
@@ -979,12 +1047,7 @@ impl ParagraphInlineLayout {
         }
     }
 
-    fn items(
-        &self,
-        image_max_width: Option<Pixels>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Vec<ParagraphInlineItem> {
+    fn items(&self, window: &mut Window, cx: &mut App) -> Vec<ParagraphInlineItem> {
         let mut items = Vec::with_capacity(self.children.len());
 
         for (ix, node) in self.children.iter().enumerate() {
@@ -997,7 +1060,7 @@ impl ParagraphInlineLayout {
                 items.push(ParagraphInlineItem::Image(ParagraphInlineImage {
                     id: ix,
                     node: image.clone(),
-                    size: measure_inline_image(image, image_max_width, window, cx),
+                    size: measure_inline_image(image, None, window, cx),
                 }));
                 continue;
             }
@@ -1027,14 +1090,6 @@ impl ParagraphInlineLayout {
         }
 
         items
-    }
-
-    fn top_padding(&self) -> Pixels {
-        if self.options.in_list && inline_nodes_are_math_only(&self.children) {
-            LIST_INLINE_MATH_TOP_PADDING
-        } else {
-            px(0.)
-        }
     }
 }
 
@@ -1066,10 +1121,14 @@ impl Element for ParagraphInlineLayout {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
+        style.flex_grow = 1.;
+        style.flex_shrink = 1.;
         style.size.width = relative(1.).into();
+        style.min_size.width = px(0.).into();
 
-        let top_padding = self.top_padding();
-        let items = self.items(None, window, cx);
+        let list_prefix = self.options.list_prefix;
+        let items = self.items(window, cx);
+        let text_style = window.text_style();
 
         let layout_id =
             window.request_measured_layout(style, move |known, available, window, cx| {
@@ -1078,7 +1137,8 @@ impl Element for ParagraphInlineLayout {
                     AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
                 });
 
-                compute_paragraph_inline_layout(&items, width, top_padding, window, cx).size
+                compute_paragraph_inline_layout(&items, width, list_prefix, &text_style, window, cx)
+                    .size
             });
 
         (layout_id, ParagraphInlineLayoutState)
@@ -1093,16 +1153,19 @@ impl Element for ParagraphInlineLayout {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let items = self.items(Some(bounds.size.width), window, cx);
+        let items = self.items(window, cx);
+        let text_style = window.text_style();
         let layout = compute_paragraph_inline_layout(
             &items,
             Some(bounds.size.width),
-            self.top_padding(),
+            self.options.list_prefix,
+            &text_style,
             window,
             cx,
         );
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let mut layout = layout;
+        prepaint_paragraph_inline_prefix(&mut layout, bounds, window, cx);
         prepaint_paragraph_inline_images(&mut layout, bounds, self.options, window, cx);
 
         ParagraphInlinePrepaint { layout, hitbox }
@@ -1132,15 +1195,21 @@ impl Element for ParagraphInlineLayout {
 fn compute_paragraph_inline_layout(
     items: &[ParagraphInlineItem],
     width: Option<Pixels>,
-    top_padding: Pixels,
+    prefix: Option<ListItemPrefix>,
+    text_style: &TextStyle,
     window: &mut Window,
     cx: &mut App,
 ) -> ParagraphInlineComputed {
-    let line_height = window.line_height();
-    let default_metrics = default_text_line_metrics(window);
-    let wrap_width = width.unwrap_or(Pixels::MAX / 2.);
+    let line_height = text_style.line_height_in_pixels(window.rem_size());
+    let default_metrics = default_text_line_metrics(text_style, window);
+    let prefix = paragraph_inline_prefix(prefix, text_style, window, cx);
+    let prefix_width = prefix.as_ref().map_or(px(0.), ParagraphInlinePrefix::width);
+    let wrap_width = width
+        .map(|width| (width - prefix_width).max(px(0.)))
+        .unwrap_or(Pixels::MAX / 2.);
     let mut computed = ParagraphInlineComputed::default();
-    if items.is_empty() {
+    computed.prefix = prefix;
+    if items.is_empty() && computed.prefix.is_none() {
         if let Some(width) = width {
             computed.size.width = width;
         }
@@ -1148,7 +1217,7 @@ fn compute_paragraph_inline_layout(
     }
 
     let mut line = ParagraphInlineLine {
-        y: top_padding,
+        y: px(0.),
         ascent: default_metrics.ascent,
         descent: default_metrics.descent,
         width: px(0.),
@@ -1156,54 +1225,68 @@ fn compute_paragraph_inline_layout(
         items: vec![],
     };
 
-    let finish_line = |computed: &mut ParagraphInlineComputed, line: &mut ParagraphInlineLine| {
-        computed.size.width = computed.size.width.max(line.width);
-        let line_height = paragraph_inline_line_height(line);
-        computed.size.height = line.y + line_height;
-        let next_y = line.y + line_height;
-        let next_align = ParagraphLineAlign::Column;
-        computed.lines.push(std::mem::replace(
-            line,
-            ParagraphInlineLine {
-                y: next_y,
-                ascent: default_metrics.ascent,
-                descent: default_metrics.descent,
-                width: px(0.),
-                align: next_align,
-                items: vec![],
-            },
-        ));
-    };
+    let mut flow_items: Vec<ParagraphInlineFlowItem<'_>> = Vec::new();
+    let mut logical = String::new();
 
     for item in items {
         match item {
             ParagraphInlineItem::Break => {
+                flush_paragraph_inline_flow_items(
+                    &mut computed,
+                    &mut line,
+                    &mut flow_items,
+                    &mut logical,
+                    wrap_width,
+                    line_height,
+                    default_metrics,
+                    prefix_width,
+                    text_style,
+                    window,
+                    cx,
+                );
                 if !line.items.is_empty() {
-                    finish_line(&mut computed, &mut line);
+                    finish_paragraph_inline_line(
+                        &mut computed,
+                        &mut line,
+                        prefix_width,
+                        default_metrics,
+                    );
                 }
             }
             ParagraphInlineItem::Image(image) => {
-                let (element, size, metrics) =
-                    layout_inline_image(image, wrap_width, default_metrics);
-                if !line.items.is_empty() && line.width + size.width > wrap_width {
-                    finish_line(&mut computed, &mut line);
-                }
-
-                update_line_metrics(&mut line, metrics.ascent, metrics.descent);
-                let y = line.ascent - metrics.ascent;
-                line.items
-                    .push(ParagraphInlineLayoutItem::Image(LaidOutInlineImage {
-                        x: line.width,
-                        y,
+                let (size, metrics) = layout_inline_image(image.size, wrap_width, default_metrics);
+                logical.push(INLINE_OBJECT_REPLACEMENT);
+                flow_items.push(ParagraphInlineFlowItem {
+                    logical_end: logical.len(),
+                    width: size.width,
+                    kind: ParagraphInlineFlowItemKind::Image {
+                        image,
                         size,
-                        element,
-                        link: image.node.link.clone(),
-                    }));
-                line.width += size.width;
+                        metrics,
+                    },
+                });
             }
             ParagraphInlineItem::Math(math) if math.display => {
+                flush_paragraph_inline_flow_items(
+                    &mut computed,
+                    &mut line,
+                    &mut flow_items,
+                    &mut logical,
+                    wrap_width,
+                    line_height,
+                    default_metrics,
+                    prefix_width,
+                    text_style,
+                    window,
+                    cx,
+                );
                 if !line.items.is_empty() {
-                    finish_line(&mut computed, &mut line);
+                    finish_paragraph_inline_line(
+                        &mut computed,
+                        &mut line,
+                        prefix_width,
+                        default_metrics,
+                    );
                 }
 
                 let metrics = math.node.layout_metrics(window);
@@ -1218,88 +1301,328 @@ fn compute_paragraph_inline_layout(
                         node: math.node.clone(),
                         link: math.link.clone(),
                     }));
-                finish_line(&mut computed, &mut line);
+                finish_paragraph_inline_line(
+                    &mut computed,
+                    &mut line,
+                    prefix_width,
+                    default_metrics,
+                );
             }
             ParagraphInlineItem::Math(math) => {
                 let metrics = math.node.layout_metrics(window);
-                if !line.items.is_empty() && line.width + metrics.size.width > wrap_width {
-                    finish_line(&mut computed, &mut line);
-                }
-
-                update_line_metrics(&mut line, metrics.ascent, metrics.descent);
-                let y = line.ascent - metrics.ascent;
-                line.items
-                    .push(ParagraphInlineLayoutItem::Math(LaidOutInlineMath {
-                        x: line.width,
-                        y,
-                        size: metrics.size,
-                        node: math.node.clone(),
-                        link: math.link.clone(),
-                    }));
-                line.width += metrics.size.width;
+                logical.push(INLINE_OBJECT_REPLACEMENT);
+                flow_items.push(ParagraphInlineFlowItem {
+                    logical_end: logical.len(),
+                    width: metrics.size.width,
+                    kind: ParagraphInlineFlowItemKind::Math { math, metrics },
+                });
             }
             ParagraphInlineItem::Text(text) => {
-                let mut start = 0;
-                while start < text.text.len() {
-                    let remaining = &text.text[start..];
-                    let shaped = shape_inline_text(
-                        SharedString::new(remaining),
-                        &text.highlights,
-                        start..text.text.len(),
-                        window,
-                        cx,
-                    );
-                    let remaining_width = wrap_width - line.width;
+                if text.text.is_empty() {
+                    continue;
+                }
 
-                    if shaped.width() <= remaining_width || width.is_none() {
-                        push_laid_out_text(
-                            &mut line,
+                let shaped = shape_inline_text(
+                    text.text.clone(),
+                    &text.highlights,
+                    0..text.text.len(),
+                    text_style,
+                    window,
+                    cx,
+                );
+                for (start, grapheme) in text.text.grapheme_indices(true) {
+                    let end = start + grapheme.len();
+                    let width = shaped.x_for_index(end) - shaped.x_for_index(start);
+                    logical.push_str(grapheme);
+                    flow_items.push(ParagraphInlineFlowItem {
+                        logical_end: logical.len(),
+                        width,
+                        kind: ParagraphInlineFlowItemKind::Text {
                             text,
-                            start..text.text.len(),
-                            shaped,
-                            line_height,
-                        );
-                        break;
-                    }
-
-                    let mut split = fitting_text_boundary(remaining, &shaped, remaining_width);
-                    if split == 0 {
-                        if !line.items.is_empty() {
-                            finish_line(&mut computed, &mut line);
-                            continue;
-                        }
-
-                        split = remaining
-                            .char_indices()
-                            .nth(1)
-                            .map(|(ix, _)| ix)
-                            .unwrap_or(remaining.len());
-                    }
-
-                    let end = start + split;
-                    let shaped = shape_inline_text(
-                        SharedString::new(&text.text[start..end]),
-                        &text.highlights,
-                        start..end,
-                        window,
-                        cx,
-                    );
-                    push_laid_out_text(&mut line, text, start..end, shaped, line_height);
-                    finish_line(&mut computed, &mut line);
-                    start = end;
+                            range: start..end,
+                        },
+                    });
                 }
             }
         }
     }
 
+    flush_paragraph_inline_flow_items(
+        &mut computed,
+        &mut line,
+        &mut flow_items,
+        &mut logical,
+        wrap_width,
+        line_height,
+        default_metrics,
+        prefix_width,
+        text_style,
+        window,
+        cx,
+    );
     if !line.items.is_empty() || computed.lines.is_empty() {
-        finish_line(&mut computed, &mut line);
+        finish_paragraph_inline_line(&mut computed, &mut line, prefix_width, default_metrics);
     }
 
     if let Some(width) = width {
         computed.size.width = width;
     }
+    align_paragraph_inline_prefix(&mut computed);
     computed
+}
+
+fn finish_paragraph_inline_line(
+    computed: &mut ParagraphInlineComputed,
+    line: &mut ParagraphInlineLine,
+    prefix_width: Pixels,
+    default_metrics: InlineItemMetrics,
+) {
+    computed.size.width = computed.size.width.max(prefix_width + line.width);
+    let line_height = paragraph_inline_line_height(line);
+    computed.size.height = line.y + line_height;
+    let next_y = line.y + line_height;
+    computed.lines.push(std::mem::replace(
+        line,
+        ParagraphInlineLine {
+            y: next_y,
+            ascent: default_metrics.ascent,
+            descent: default_metrics.descent,
+            width: px(0.),
+            align: ParagraphLineAlign::Column,
+            items: vec![],
+        },
+    ));
+}
+
+fn flush_paragraph_inline_flow_items(
+    computed: &mut ParagraphInlineComputed,
+    line: &mut ParagraphInlineLine,
+    flow_items: &mut Vec<ParagraphInlineFlowItem<'_>>,
+    logical: &mut String,
+    wrap_width: Pixels,
+    line_height: Pixels,
+    default_metrics: InlineItemMetrics,
+    prefix_width: Pixels,
+    text_style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if flow_items.is_empty() {
+        return;
+    }
+
+    let logical_breaks: Vec<usize> = linebreaks(logical.as_str()).map(|(ix, _)| ix).collect();
+    append_paragraph_inline_flow_items(
+        computed,
+        line,
+        flow_items,
+        &logical_breaks,
+        wrap_width,
+        line_height,
+        default_metrics,
+        prefix_width,
+        text_style,
+        window,
+        cx,
+    );
+    flow_items.clear();
+    logical.clear();
+}
+
+fn append_paragraph_inline_flow_items(
+    computed: &mut ParagraphInlineComputed,
+    line: &mut ParagraphInlineLine,
+    flow_items: &[ParagraphInlineFlowItem<'_>],
+    logical_breaks: &[usize],
+    wrap_width: Pixels,
+    line_height: Pixels,
+    default_metrics: InlineItemMetrics,
+    prefix_width: Pixels,
+    text_style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut start = 0;
+
+    while start < flow_items.len() {
+        let line_start = start;
+        let mut end = start;
+        let mut line_width = line.width;
+        let mut last_fit_end = start;
+        let mut last_break_end = None;
+
+        while end < flow_items.len() {
+            let item = &flow_items[end];
+            let next_width = line_width + item.width;
+            if next_width > wrap_width && end > line_start {
+                break;
+            }
+
+            line_width = next_width;
+            end += 1;
+            last_fit_end = end;
+
+            if logical_breaks.binary_search(&item.logical_end).is_ok() {
+                last_break_end = Some(end);
+            }
+
+            if line_width > wrap_width {
+                break;
+            }
+        }
+
+        let mut line_end = if end < flow_items.len() {
+            last_break_end
+                .filter(|break_end| *break_end > line_start)
+                .unwrap_or(last_fit_end.max(line_start + 1))
+        } else {
+            flow_items.len()
+        };
+
+        while line_end > line_start + 1
+            && line.width
+                + paragraph_inline_flow_items_width(
+                    &flow_items[start..line_end],
+                    text_style,
+                    window,
+                    cx,
+                )
+                > wrap_width
+        {
+            line_end -= 1;
+        }
+
+        push_paragraph_inline_flow_items(
+            line,
+            &flow_items[start..line_end],
+            line_height,
+            text_style,
+            window,
+            cx,
+        );
+
+        if line_end < flow_items.len() {
+            finish_paragraph_inline_line(computed, line, prefix_width, default_metrics);
+        }
+
+        start = line_end;
+    }
+}
+
+fn paragraph_inline_flow_items_width(
+    flow_items: &[ParagraphInlineFlowItem<'_>],
+    text_style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Pixels {
+    let mut width = px(0.);
+    let mut ix = 0;
+
+    while ix < flow_items.len() {
+        match &flow_items[ix].kind {
+            ParagraphInlineFlowItemKind::Text { text, range } => {
+                let mut end_ix = ix + 1;
+                let mut range = range.clone();
+
+                while let Some(ParagraphInlineFlowItem {
+                    kind:
+                        ParagraphInlineFlowItemKind::Text {
+                            text: next_text,
+                            range: next_range,
+                        },
+                    ..
+                }) = flow_items.get(end_ix)
+                {
+                    if std::ptr::eq(*text, *next_text) && range.end == next_range.start {
+                        range.end = next_range.end;
+                        end_ix += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let shaped = shape_inline_text(
+                    SharedString::new(&text.text[range.clone()]),
+                    &text.highlights,
+                    range,
+                    text_style,
+                    window,
+                    cx,
+                );
+                width += shaped.width();
+                ix = end_ix;
+            }
+            ParagraphInlineFlowItemKind::Image { size, .. } => {
+                width += size.width;
+                ix += 1;
+            }
+            ParagraphInlineFlowItemKind::Math { metrics, .. } => {
+                width += metrics.size.width;
+                ix += 1;
+            }
+        }
+    }
+
+    width
+}
+
+fn push_paragraph_inline_flow_items(
+    line: &mut ParagraphInlineLine,
+    flow_items: &[ParagraphInlineFlowItem<'_>],
+    line_height: Pixels,
+    text_style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut ix = 0;
+    while ix < flow_items.len() {
+        match &flow_items[ix].kind {
+            ParagraphInlineFlowItemKind::Text { text, range } => {
+                let mut end_ix = ix + 1;
+                let mut range = range.clone();
+
+                while let Some(ParagraphInlineFlowItem {
+                    kind:
+                        ParagraphInlineFlowItemKind::Text {
+                            text: next_text,
+                            range: next_range,
+                        },
+                    ..
+                }) = flow_items.get(end_ix)
+                {
+                    if std::ptr::eq(*text, *next_text) && range.end == next_range.start {
+                        range.end = next_range.end;
+                        end_ix += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let shaped = shape_inline_text(
+                    SharedString::new(&text.text[range.clone()]),
+                    &text.highlights,
+                    range.clone(),
+                    text_style,
+                    window,
+                    cx,
+                );
+                push_laid_out_text(line, text, range, shaped, line_height);
+                ix = end_ix;
+            }
+            ParagraphInlineFlowItemKind::Image {
+                image,
+                size,
+                metrics,
+            } => {
+                push_laid_out_image(line, image, *size, *metrics);
+                ix += 1;
+            }
+            ParagraphInlineFlowItemKind::Math { math, metrics } => {
+                push_laid_out_math(line, math, *metrics);
+                ix += 1;
+            }
+        }
+    }
 }
 
 fn push_laid_out_text(
@@ -1312,12 +1635,13 @@ fn push_laid_out_text(
     let fragment = SharedString::new(&text.text[range.clone()]);
     let width = shaped.width();
     let metrics = shaped_text_line_metrics(&shaped, line_height);
+    let height = metrics.ascent + metrics.descent;
     update_line_metrics(line, metrics.ascent, metrics.descent);
     line.items
         .push(ParagraphInlineLayoutItem::Text(LaidOutInlineText {
             x: line.width,
             y: line.ascent - metrics.ascent,
-            height: line_height,
+            height,
             text: fragment,
             source_text: text.text.clone(),
             source_range: range,
@@ -1326,6 +1650,44 @@ fn push_laid_out_text(
             links: text.links.clone(),
         }));
     line.width += width;
+}
+
+fn push_laid_out_image(
+    line: &mut ParagraphInlineLine,
+    image: &ParagraphInlineImage,
+    size: Size<Pixels>,
+    metrics: InlineItemMetrics,
+) {
+    update_line_metrics(line, metrics.ascent, metrics.descent);
+    let y = line.ascent - metrics.ascent;
+    let element = inline_image_element(&image.node, image.id, size);
+    line.items
+        .push(ParagraphInlineLayoutItem::Image(LaidOutInlineImage {
+            x: line.width,
+            y,
+            size,
+            element,
+            link: image.node.link.clone(),
+        }));
+    line.width += size.width;
+}
+
+fn push_laid_out_math(
+    line: &mut ParagraphInlineLine,
+    math: &ParagraphInlineMath,
+    metrics: MathMetrics,
+) {
+    update_line_metrics(line, metrics.ascent, metrics.descent);
+    let y = line.ascent - metrics.ascent;
+    line.items
+        .push(ParagraphInlineLayoutItem::Math(LaidOutInlineMath {
+            x: line.width,
+            y,
+            size: metrics.size,
+            node: math.node.clone(),
+            link: math.link.clone(),
+        }));
+    line.width += metrics.size.width;
 }
 
 fn inline_image_element(image: &ImageNode, id: usize, size: Size<Pixels>) -> AnyElement {
@@ -1372,15 +1734,14 @@ fn measure_inline_image(
 }
 
 fn layout_inline_image(
-    image: &ParagraphInlineImage,
+    image_size: Size<Pixels>,
     max_width: Pixels,
     default_metrics: InlineItemMetrics,
-) -> (AnyElement, Size<Pixels>, InlineItemMetrics) {
-    let size = constrain_inline_image_size(image.size, max_width, default_metrics);
-    let element = inline_image_element(&image.node, image.id, size);
+) -> (Size<Pixels>, InlineItemMetrics) {
+    let size = constrain_inline_image_size(image_size, max_width, default_metrics);
     let metrics = inline_image_metrics(size, default_metrics);
 
-    (element, size, metrics)
+    (size, metrics)
 }
 
 fn constrain_inline_image_size(
@@ -1409,13 +1770,11 @@ fn inline_image_metrics(
     size: Size<Pixels>,
     default_metrics: InlineItemMetrics,
 ) -> InlineItemMetrics {
-    let line_height = default_metrics.ascent + default_metrics.descent;
-    let top = (line_height - size.height) / 2.;
-    let ascent = default_metrics.ascent - top;
+    let descent = default_metrics.descent.max(px(0.)).min(size.height);
 
     InlineItemMetrics {
-        ascent,
-        descent: size.height - ascent,
+        ascent: size.height - descent,
+        descent,
     }
 }
 
@@ -1441,11 +1800,10 @@ fn paragraph_inline_line_height(line: &ParagraphInlineLine) -> Pixels {
     line.ascent + line.descent
 }
 
-fn default_text_line_metrics(window: &Window) -> InlineItemMetrics {
-    let text_style = window.text_style();
+fn default_text_line_metrics(text_style: &TextStyle, window: &Window) -> InlineItemMetrics {
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let font_id = window.text_system().resolve_font(&text_style.font());
-    let line_height = window.line_height();
+    let line_height = text_style.line_height_in_pixels(window.rem_size());
     let ascent = window
         .text_system()
         .baseline_offset(font_id, font_size, line_height);
@@ -1457,7 +1815,8 @@ fn default_text_line_metrics(window: &Window) -> InlineItemMetrics {
 }
 
 fn shaped_text_line_metrics(shaped: &ShapedLine, line_height: Pixels) -> InlineItemMetrics {
-    let padding_top = px(0.);
+    let line_height = line_height.max(shaped.ascent + shaped.descent);
+    let padding_top = (line_height - shaped.ascent - shaped.descent) / 2.;
     let ascent = padding_top + shaped.ascent;
 
     InlineItemMetrics {
@@ -1470,10 +1829,10 @@ fn shape_inline_text(
     text: SharedString,
     highlights: &[(Range<usize>, HighlightStyle)],
     source_range: Range<usize>,
+    text_style: &TextStyle,
     window: &mut Window,
     _cx: &mut App,
 ) -> ShapedLine {
-    let text_style = window.text_style();
     let mut runs: Vec<TextRun> = Vec::new();
     let mut ix = source_range.start;
     for (range, highlight) in highlights {
@@ -1490,64 +1849,14 @@ fn shape_inline_text(
         ix = end;
     }
     if ix < source_range.end {
-        runs.push(text_style.to_run(source_range.end - ix));
+        runs.push(text_style.clone().to_run(source_range.end - ix));
     }
 
     let runs = crate::text::utils::normalize_runs_for_text(text.as_ref(), runs);
-    let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
     window
         .text_system()
         .shape_line(text, font_size, &runs, None)
-}
-
-fn fitting_text_boundary(text: &str, shaped: &ShapedLine, width: Pixels) -> usize {
-    if width <= px(0.) {
-        return 0;
-    }
-
-    let mut prev_ch = '\0';
-    let mut first_non_whitespace = false;
-    let mut last_candidate = 0;
-    let mut last_fit = 0;
-
-    for (ix, ch) in text.char_indices() {
-        if is_inline_word_char(ch) {
-            if prev_ch == ' ' && ch != ' ' && first_non_whitespace {
-                last_candidate = ix;
-            }
-        } else if ch != ' ' && first_non_whitespace {
-            last_candidate = ix;
-        }
-
-        if ch != ' ' {
-            first_non_whitespace = true;
-        }
-
-        let next_ix = ix + ch.len_utf8();
-        if shaped.x_for_index(next_ix) > width {
-            return if last_candidate > 0 {
-                last_candidate
-            } else {
-                last_fit
-            };
-        }
-
-        last_fit = next_ix;
-        prev_ch = ch;
-    }
-
-    text.len()
-}
-
-fn is_inline_word_char(c: char) -> bool {
-    matches!(c, '_')
-        || c.is_ascii_alphanumeric()
-        || matches!(c, '\u{00C0}'..='\u{00FF}')
-        || matches!(c, '\u{0100}'..='\u{017F}')
-        || matches!(c, '\u{0180}'..='\u{024F}')
-        || matches!(c, '\u{0400}'..='\u{04FF}')
-        || matches!(c, '\u{1E00}'..='\u{1EFF}')
-        || matches!(c, '\u{0300}'..='\u{036F}')
 }
 
 fn prepaint_paragraph_inline_images(
@@ -1557,8 +1866,12 @@ fn prepaint_paragraph_inline_images(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let prefix_width = layout
+        .prefix
+        .as_ref()
+        .map_or(px(0.), ParagraphInlinePrefix::width);
     for line in &mut layout.lines {
-        let line_offset = paragraph_line_offset(line, bounds.size.width, options);
+        let line_offset = paragraph_line_offset(line, bounds.size.width, prefix_width, options);
         for item in &mut line.items {
             let ParagraphInlineLayoutItem::Image(image) = item else {
                 continue;
@@ -1578,6 +1891,33 @@ fn prepaint_paragraph_inline_images(
     }
 }
 
+fn prepaint_paragraph_inline_prefix(
+    layout: &mut ParagraphInlineComputed,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(ParagraphInlinePrefix::Todo {
+        y,
+        size,
+        element: Some(element),
+        ..
+    }) = &mut layout.prefix
+    else {
+        return;
+    };
+
+    element.prepaint_as_root(
+        bounds.origin + point(px(0.), *y),
+        Size {
+            width: AvailableSpace::Definite(*size),
+            height: AvailableSpace::Definite(*size),
+        },
+        window,
+        cx,
+    );
+}
+
 fn paint_paragraph_inline_layout(
     layout: &mut ParagraphInlineComputed,
     bounds: Bounds<Pixels>,
@@ -1594,8 +1934,14 @@ fn paint_paragraph_inline_layout(
     let mut text_states: Vec<(Arc<Mutex<InlineState>>, SharedString, Option<Range<usize>>)> =
         Vec::new();
 
+    paint_paragraph_inline_prefix(layout, bounds, window, cx);
+
+    let prefix_width = layout
+        .prefix
+        .as_ref()
+        .map_or(px(0.), ParagraphInlinePrefix::width);
     for line in &mut layout.lines {
-        let line_offset = paragraph_line_offset(line, bounds.size.width, options);
+        let line_offset = paragraph_line_offset(line, bounds.size.width, prefix_width, options);
         for item in &mut line.items {
             match item {
                 ParagraphInlineLayoutItem::Text(text) => {
@@ -1716,20 +2062,49 @@ fn paint_paragraph_inline_layout(
     }
 }
 
+fn paint_paragraph_inline_prefix(
+    layout: &mut ParagraphInlineComputed,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match &mut layout.prefix {
+        Some(ParagraphInlinePrefix::Marker {
+            y,
+            height,
+            line: Some(line),
+            ..
+        }) => {
+            let origin = bounds.origin + point(px(0.), *y);
+            let _ = line.paint(origin, *height, TextAlign::Left, None, window, cx);
+        }
+        Some(ParagraphInlinePrefix::Todo {
+            element: Some(element),
+            ..
+        }) => {
+            element.paint(window, cx);
+        }
+        _ => {}
+    }
+}
+
 fn paragraph_line_offset(
     line: &ParagraphInlineLine,
     width: Pixels,
+    prefix_width: Pixels,
     options: NodeRenderOptions,
 ) -> Pixels {
+    let width = (width - prefix_width).max(px(0.));
     let align = match line.align {
         ParagraphLineAlign::Center => ColumnumnAlign::Center,
         ParagraphLineAlign::Column => options.column_align,
     };
-    match align {
-        ColumnumnAlign::Left => px(0.),
-        ColumnumnAlign::Center => (width - line.width).max(px(0.)) / 2.,
-        ColumnumnAlign::Right => (width - line.width).max(px(0.)),
-    }
+    prefix_width
+        + match align {
+            ColumnumnAlign::Left => px(0.),
+            ColumnumnAlign::Center => (width - line.width).max(px(0.)) / 2.,
+            ColumnumnAlign::Right => (width - line.width).max(px(0.)),
+        }
 }
 
 fn record_text_state(
@@ -1970,100 +2345,17 @@ impl Paragraph {
         options: NodeRenderOptions,
         node_cx: &NodeContext,
         _window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> AnyElement {
-        if self.children.iter().any(|node| node.math.is_some()) {
-            return ParagraphInlineLayout::new(
-                self.span.map(Into::into).unwrap_or_else(|| {
-                    ElementId::Name(format!("paragraph-inline-{}", options.ix).into())
-                }),
-                self.children.clone(),
-                node_cx.clone(),
-                options,
-            )
-            .into_any_element();
-        }
-
-        let span = self.span;
-        let mut child_nodes: Vec<AnyElement> = vec![];
-
-        let mut text = String::new();
-        let mut highlights: Vec<(Range<usize>, HighlightStyle)> = vec![];
-        let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
-        let mut offset = 0;
-
-        let mut ix = 0usize;
-        for inline_node in &self.children {
-            let node_text = &inline_node.text;
-            let text_len = node_text.len();
-            text.push_str(node_text);
-
-            if let Some(image) = &inline_node.image {
-                if text.len() > 0 {
-                    inline_node
-                        .state
-                        .lock()
-                        .unwrap()
-                        .set_text(text.clone().into());
-                    child_nodes.push(
-                        Inline::new(
-                            ix,
-                            inline_node.state.clone(),
-                            links.clone(),
-                            highlights.clone(),
-                        )
-                        .into_any_element(),
-                    );
-                }
-                child_nodes.push(
-                    img(image.url.clone())
-                        .id(ix)
-                        .object_fit(ObjectFit::Contain)
-                        .max_w(relative(1.))
-                        .when_some(image.width, |this, width| this.w(width))
-                        .when_some(image.link.clone(), |this, link| {
-                            let title = image.title();
-                            this.cursor_pointer()
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(title.clone()).build(window, cx)
-                                })
-                                .on_click(move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.open_url(&link.url);
-                                })
-                        })
-                        .into_any_element(),
-                );
-
-                text.clear();
-                links.clear();
-                highlights.clear();
-                offset = 0;
-            } else {
-                let (node_highlights, node_links) = inline_node_styles_for_range(
-                    inline_node,
-                    0..inline_node.text.len(),
-                    offset,
-                    node_cx,
-                    cx,
-                );
-                links.extend(node_links);
-                highlights = gpui::combine_highlights(highlights, node_highlights).collect();
-                offset += text_len;
-            }
-            ix += 1;
-        }
-
-        if text.len() > 0 {
-            self.state.lock().unwrap().set_text(text.into());
-            child_nodes
-                .push(Inline::new(ix, self.state.clone(), links, highlights).into_any_element());
-        }
-
-        div()
-            .id(span.unwrap_or_default())
-            .children(child_nodes)
-            .into_any_element()
+        ParagraphInlineLayout::new(
+            self.span.map(Into::into).unwrap_or_else(|| {
+                ElementId::Name(format!("paragraph-inline-{}", options.ix).into())
+            }),
+            self.children.clone(),
+            node_cx.clone(),
+            options,
+        )
+        .into_any_element()
     }
 }
 
@@ -2304,14 +2596,26 @@ impl BlockNode {
                 .when(*spread, |this| this.child(div()))
                 .children({
                     let mut items: Vec<Div> = Vec::with_capacity(children.len());
+                    let item_prefix = match *checked {
+                        Some(checked) => Some(ListItemPrefix::Todo {
+                            checked,
+                            visible: true,
+                        }),
+                        None if !options.todo => Some(ListItemPrefix::Marker {
+                            ix,
+                            ordered: options.ordered,
+                            depth: options.depth,
+                            visible: true,
+                        }),
+                        None => None,
+                    };
+                    let mut list_prefix = item_prefix;
+                    let list_indent = item_prefix.map(ListItemPrefix::hidden);
 
                     for (child_ix, child) in children.iter().enumerate() {
                         match child {
-                            BlockNode::Paragraph(paragraph) => {
-                                let last_not_list = child_ix > 0
-                                    && !matches!(children[child_ix - 1], BlockNode::List { .. });
-                                let marker_top_margin =
-                                    list_marker_top_margin(&paragraph.children, window);
+                            BlockNode::Paragraph(_) => {
+                                let prefix = list_prefix.take().or(list_indent);
 
                                 let text = child.render_block(
                                     NodeRenderOptions {
@@ -2319,6 +2623,7 @@ impl BlockNode {
                                         todo: checked.is_some(),
                                         in_list: true,
                                         is_last: true,
+                                        list_prefix: prefix,
                                         ..options
                                     },
                                     node_cx,
@@ -2326,75 +2631,43 @@ impl BlockNode {
                                     cx,
                                 );
 
-                                // Continuation paragraph: stack vertically below
-                                // the previous row, indented to align with the text
-                                // column (past bullet/number prefix).
-                                if last_not_list {
-                                    if let Some(preceding_row) = items.pop() {
-                                        items.push(
-                                            v_flex().child(preceding_row).child(
-                                                div()
-                                                    .w_full()
-                                                    .pl(rems(0.75))
-                                                    .overflow_hidden()
-                                                    .child(text),
-                                            ),
-                                        );
-                                        continue;
-                                    }
-                                }
-
-                                items.push(
-                                    h_flex()
-                                        .w_full()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .relative()
-                                        .items_start()
-                                        .content_start()
-                                        .when(!options.todo && checked.is_none(), |this| {
-                                            this.child(list_item_prefix_element(
-                                                ix,
-                                                options.ordered,
-                                                options.depth,
-                                                marker_top_margin,
-                                            ))
-                                        })
-                                        .when_some(*checked, |this, checked| {
-                                            // Todo list checkbox
-                                            this.child(
-                                                div()
-                                                    .flex()
-                                                    .mt(rems(0.4))
-                                                    .mr_1p5()
-                                                    .size(rems(0.875))
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .rounded(cx.theme().radius.half())
-                                                    .border_1()
-                                                    .border_color(cx.theme().primary)
-                                                    .text_color(cx.theme().primary_foreground)
-                                                    .when(checked, |this| {
-                                                        this.bg(cx.theme().primary).child(
-                                                            Icon::new(IconName::Check)
-                                                                .size_2()
-                                                                .text_xs(),
-                                                        )
-                                                    }),
-                                            )
-                                        })
-                                        .child(
-                                            div().flex_1().min_w_0().overflow_hidden().child(text),
-                                        ),
-                                );
+                                items.push(div().w_full().min_w_0().overflow_hidden().child(text));
                             }
                             BlockNode::List { .. } => {
+                                if let Some(prefix) = list_prefix.take() {
+                                    items.push(
+                                        div().w_full().min_w_0().overflow_hidden().child(
+                                            ParagraphInlineLayout::new(
+                                                ElementId::Name(
+                                                    format!(
+                                                        "list-prefix-{}-{}",
+                                                        options.ix, child_ix
+                                                    )
+                                                    .into(),
+                                                ),
+                                                vec![],
+                                                node_cx.clone(),
+                                                NodeRenderOptions {
+                                                    depth: options.depth + 1,
+                                                    todo: checked.is_some(),
+                                                    in_list: true,
+                                                    is_last: true,
+                                                    list_prefix: Some(prefix),
+                                                    ..options
+                                                },
+                                            )
+                                            .into_any_element(),
+                                        ),
+                                    );
+                                }
+
                                 items.push(div().ml(rems(1.)).child(child.render_block(
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
                                         in_list: true,
                                         is_last: true,
+                                        list_prefix: None,
                                         ..options
                                     },
                                     node_cx,
@@ -2403,76 +2676,27 @@ impl BlockNode {
                                 )));
                             }
                             BlockNode::Math(math) => {
-                                let text_ascent = default_text_line_metrics(window).ascent;
-                                let marker_top_margin = (LIST_INLINE_MATH_MARKER_TOP_MARGIN
-                                    + math.layout_metrics(window).ascent
-                                    - text_ascent)
-                                    .max(px(0.));
-                                let text = child.render_block(
+                                let prefix = list_prefix.take().or(list_indent);
+                                let text = ParagraphInlineLayout::new(
+                                    math.span().map(Into::into).unwrap_or_else(|| {
+                                        ElementId::Name(
+                                            format!("list-math-{}-{}", options.ix, child_ix).into(),
+                                        )
+                                    }),
+                                    vec![InlineNode::math(math.clone())],
+                                    node_cx.clone(),
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
                                         in_list: true,
                                         is_last: true,
+                                        list_prefix: prefix,
                                         ..options
                                     },
-                                    node_cx,
-                                    window,
-                                    cx,
-                                );
+                                )
+                                .into_any_element();
 
-                                if child_ix == 0 {
-                                    items.push(
-                                        h_flex()
-                                            .w_full()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .relative()
-                                            .items_start()
-                                            .content_start()
-                                            .when(!options.todo && checked.is_none(), |this| {
-                                                this.child(list_item_prefix_element(
-                                                    ix,
-                                                    options.ordered,
-                                                    options.depth,
-                                                    marker_top_margin,
-                                                ))
-                                            })
-                                            .when_some(*checked, |this, checked| {
-                                                this.child(
-                                                    div()
-                                                        .flex()
-                                                        .mt(rems(0.4))
-                                                        .mr_1p5()
-                                                        .size(rems(0.875))
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .rounded(cx.theme().radius.half())
-                                                        .border_1()
-                                                        .border_color(cx.theme().primary)
-                                                        .text_color(cx.theme().primary_foreground)
-                                                        .when(checked, |this| {
-                                                            this.bg(cx.theme().primary).child(
-                                                                Icon::new(IconName::Check)
-                                                                    .size_2()
-                                                                    .text_xs(),
-                                                            )
-                                                        }),
-                                                )
-                                            })
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .overflow_hidden()
-                                                    .child(text),
-                                            ),
-                                    );
-                                } else {
-                                    items.push(
-                                        div().w_full().pl(rems(0.75)).overflow_hidden().child(text),
-                                    );
-                                }
+                                items.push(div().w_full().min_w_0().overflow_hidden().child(text));
                             }
                             _ => {}
                         }
@@ -2615,6 +2839,8 @@ impl BlockNode {
                 .into_any_element(),
             BlockNode::Paragraph(paragraph) => div()
                 .id(("p", ix))
+                .w_full()
+                .min_w_0()
                 .pb(mb)
                 .child(paragraph.render(options, node_cx, window, cx))
                 .into_any_element(),
@@ -2638,6 +2864,8 @@ impl BlockNode {
 
                 div()
                     .id(SharedString::from(format!("h{}-{}", level, ix)))
+                    .w_full()
+                    .min_w_0()
                     .pb(rems(0.3))
                     .whitespace_normal()
                     .text_size(text_size)
@@ -2669,6 +2897,8 @@ impl BlockNode {
                 children, ordered, ..
             } => v_flex()
                 .id((if *ordered { "ol" } else { "ul" }, ix))
+                .w_full()
+                .min_w_0()
                 .pb(mb)
                 .children({
                     let mut items = Vec::with_capacity(children.len());

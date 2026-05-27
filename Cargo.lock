@@ -3065,6 +3065,7 @@ dependencies = [
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "ttf-parser",
+ "unicode-linebreak",
  "unicode-segmentation",
  "uuid",
  "zed-sum-tree",
