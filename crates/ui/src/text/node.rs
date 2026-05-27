@@ -7,10 +7,10 @@ use std::{
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, DefiniteLength, Div, Element, ElementId, FontStyle,
     FontWeight, GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId,
-    InteractiveElement as _, IntoElement, LayoutId, Length, MouseUpEvent, ObjectFit, ParentElement,
-    Pixels, Point, ShapedLine, SharedString, SharedUri, Size, StatefulInteractiveElement, Style,
-    Styled, StyledImage as _, TextAlign, TextRun, TextStyle, Window, div, fill, img, point,
-    prelude::FluentBuilder as _, px, relative, rems,
+    InteractiveElement as _, IntoElement, LayoutId, Length, MouseMoveEvent, MouseUpEvent,
+    ObjectFit, ParentElement, Pixels, Point, ShapedLine, SharedString, SharedUri, Size,
+    StatefulInteractiveElement, Style, Styled, StyledImage as _, TextAlign, TextRun, TextStyle,
+    Window, div, fill, img, point, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 use ropey::Rope;
@@ -24,7 +24,7 @@ use crate::{
     text::{
         CodeBlockActionsFn,
         document::{ListItemPrefix, NodeRenderOptions},
-        inline::{Inline, InlineState},
+        inline::InlineState,
         math::{MathMetrics, MathNode},
     },
     tooltip::Tooltip,
@@ -656,11 +656,16 @@ impl CodeBlock {
                     .text_size(cx.theme().mono_font_size)
                     .relative()
                     .refine_style(&style.code_block)
-                    .child(Inline::new(
-                        "code",
+                    .child(ParagraphInlineLayout::highlighted_text(
+                        ElementId::Name(format!("code-inline-{}", options.ix).into()),
+                        self.code(),
                         self.state.clone(),
-                        vec![],
                         self.styles.clone(),
+                        node_cx.clone(),
+                        NodeRenderOptions {
+                            is_last: true,
+                            ..*options
+                        },
                     ))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
@@ -799,6 +804,7 @@ fn inline_node_styles_for_range(
 struct ParagraphInlineLayout {
     id: ElementId,
     children: Vec<InlineNode>,
+    items: Option<Vec<ParagraphInlineItem>>,
     node_cx: NodeContext,
     options: NodeRenderOptions,
 }
@@ -814,6 +820,8 @@ enum ParagraphInlineItem {
 #[derive(Clone)]
 struct ParagraphInlineText {
     text: SharedString,
+    source_text: SharedString,
+    source_offset: usize,
     state: Arc<Mutex<InlineState>>,
     links: Vec<(Range<usize>, LinkMark)>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
@@ -1008,7 +1016,7 @@ fn align_paragraph_inline_prefix(layout: &mut ParagraphInlineComputed) {
         }
         ParagraphInlinePrefix::Marker { .. } => {}
         ParagraphInlinePrefix::Todo { y, size, .. } => {
-            *y = line.y + ((line.ascent + line.descent - *size) / 2.).max(px(0.));
+            *y = line.y + line.ascent - *size;
         }
     }
 }
@@ -1042,12 +1050,36 @@ impl ParagraphInlineLayout {
         Self {
             id,
             children,
+            items: None,
+            node_cx,
+            options,
+        }
+    }
+
+    fn highlighted_text(
+        id: ElementId,
+        text: SharedString,
+        state: Arc<Mutex<InlineState>>,
+        highlights: Vec<(Range<usize>, HighlightStyle)>,
+        node_cx: NodeContext,
+        options: NodeRenderOptions,
+    ) -> Self {
+        Self {
+            id,
+            children: vec![],
+            items: Some(paragraph_inline_highlighted_text_items(
+                text, state, highlights,
+            )),
             node_cx,
             options,
         }
     }
 
     fn items(&self, window: &mut Window, cx: &mut App) -> Vec<ParagraphInlineItem> {
+        if let Some(items) = &self.items {
+            return items.clone();
+        }
+
         let mut items = Vec::with_capacity(self.children.len());
 
         for (ix, node) in self.children.iter().enumerate() {
@@ -1083,6 +1115,8 @@ impl ParagraphInlineLayout {
             let highlights = gpui::combine_highlights(Vec::new(), highlights).collect();
             items.push(ParagraphInlineItem::Text(ParagraphInlineText {
                 text: node.text.clone(),
+                source_text: node.text.clone(),
+                source_offset: 0,
                 state: node.state.clone(),
                 links,
                 highlights,
@@ -1090,6 +1124,69 @@ impl ParagraphInlineLayout {
         }
 
         items
+    }
+}
+
+fn paragraph_inline_highlighted_text_items(
+    text: SharedString,
+    state: Arc<Mutex<InlineState>>,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+) -> Vec<ParagraphInlineItem> {
+    let mut items = Vec::new();
+    let mut start = 0;
+
+    for (ix, ch) in text.char_indices() {
+        if ch != '\n' {
+            continue;
+        }
+
+        if start < ix {
+            items.push(ParagraphInlineItem::Text(paragraph_inline_text_segment(
+                &text,
+                start..ix,
+                state.clone(),
+                &highlights,
+            )));
+        }
+        items.push(ParagraphInlineItem::Break);
+        start = ix + ch.len_utf8();
+    }
+
+    if start < text.len() {
+        items.push(ParagraphInlineItem::Text(paragraph_inline_text_segment(
+            &text,
+            start..text.len(),
+            state,
+            &highlights,
+        )));
+    }
+
+    items
+}
+
+fn paragraph_inline_text_segment(
+    source_text: &SharedString,
+    range: Range<usize>,
+    state: Arc<Mutex<InlineState>>,
+    highlights: &[(Range<usize>, HighlightStyle)],
+) -> ParagraphInlineText {
+    let text = SharedString::new(&source_text[range.clone()]);
+    let highlights = highlights
+        .iter()
+        .filter_map(|(highlight_range, highlight)| {
+            let start = highlight_range.start.max(range.start);
+            let end = highlight_range.end.min(range.end);
+            (start < end).then(|| ((start - range.start)..(end - range.start), *highlight))
+        })
+        .collect();
+
+    ParagraphInlineText {
+        text,
+        source_text: source_text.clone(),
+        source_offset: range.start,
+        state,
+        links: vec![],
+        highlights,
     }
 }
 
@@ -1244,7 +1341,7 @@ fn compute_paragraph_inline_layout(
                     window,
                     cx,
                 );
-                if !line.items.is_empty() {
+                if !line.items.is_empty() || !computed.lines.is_empty() {
                     finish_paragraph_inline_line(
                         &mut computed,
                         &mut line,
@@ -1643,8 +1740,8 @@ fn push_laid_out_text(
             y: line.ascent - metrics.ascent,
             height,
             text: fragment,
-            source_text: text.text.clone(),
-            source_range: range,
+            source_text: text.source_text.clone(),
+            source_range: (text.source_offset + range.start)..(text.source_offset + range.end),
             state: text.state.clone(),
             line: shaped,
             links: text.links.clone(),
@@ -1692,14 +1789,20 @@ fn push_laid_out_math(
 
 fn inline_image_element(image: &ImageNode, id: usize, size: Size<Pixels>) -> AnyElement {
     let title = image.title();
+    let link = image.link.clone();
+
     img(image.url.clone())
         .id(("inline-image", id))
         .object_fit(ObjectFit::Contain)
         .w(size.width)
         .h(size.height)
-        .when(image.link.is_some(), |this| {
+        .when_some(link, |this, link| {
             this.cursor_pointer()
                 .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    cx.open_url(&link.url);
+                })
         })
         .into_any_element()
 }
@@ -1947,6 +2050,14 @@ fn paint_paragraph_inline_layout(
                 ParagraphInlineLayoutItem::Text(text) => {
                     record_text_state(&mut text_states, &text.state, text.source_text.clone());
                     let origin = bounds.origin + point(line_offset + text.x, line.y + text.y);
+                    let _ = text.line.paint_background(
+                        origin,
+                        text.height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
                     let selected =
                         selected_ranges_for_text(text, origin, window, cx, &mut text_states);
                     for range in selected {
@@ -2037,13 +2148,35 @@ fn paint_paragraph_inline_layout(
     }
 
     if !has_selection && !link_bounds.is_empty() {
-        let hitbox = hitbox.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if !phase.bubble() || !hitbox.is_hovered(window) {
+        let current_view = window.current_view();
+        let hover_hitbox = hitbox.clone();
+        let link_hover_bounds = link_bounds
+            .iter()
+            .map(|(bounds, _)| *bounds)
+            .collect::<Vec<_>>();
+        let mut hovering_link = hovered_link.is_some();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if !phase.bubble() || !hover_hitbox.is_hovered(window) {
                 return;
             }
 
-            let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
+            let updated = link_hover_bounds
+                .iter()
+                .any(|bounds| bounds.contains(&event.position));
+            if hovering_link != updated {
+                hovering_link = updated;
+                cx.notify(current_view);
+            }
+        });
+
+        let click_hitbox = hitbox.clone();
+        let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if !phase.bubble() || !click_hitbox.is_hovered(window) {
+                return;
+            }
+
+            let Some(text_view_state) = &text_view_state else {
                 return;
             };
             if text_view_state.read(cx).has_selection() {
@@ -2226,6 +2359,80 @@ fn point_in_inline_selection(
         x <= bottom_point.x
     } else {
         true
+    }
+}
+
+#[cfg(test)]
+mod inline_selection_tests {
+    use gpui::{point, px};
+
+    use super::point_in_inline_selection;
+
+    #[test]
+    fn test_point_in_inline_selection_multiline() {
+        let line_height = px(20.);
+        let char_width = px(10.);
+        let start = point(px(50.), px(50.));
+        let end = point(px(150.), px(150.));
+
+        assert!(point_in_inline_selection(
+            point(px(50.), px(50.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
+        assert!(!point_in_inline_selection(
+            point(px(40.), px(50.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
+        assert!(point_in_inline_selection(
+            point(px(40.), px(70.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
+        assert!(!point_in_inline_selection(
+            point(px(160.), px(140.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
+    }
+
+    #[test]
+    fn test_point_in_inline_selection_same_visual_line_with_reversed_y() {
+        let line_height = px(20.);
+        let char_width = px(10.);
+        let start = point(px(60.), px(58.));
+        let end = point(px(100.), px(55.));
+
+        assert!(!point_in_inline_selection(
+            point(px(40.), px(50.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
+        assert!(point_in_inline_selection(
+            point(px(70.), px(50.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
+        assert!(!point_in_inline_selection(
+            point(px(110.), px(50.)),
+            char_width,
+            start,
+            end,
+            line_height
+        ));
     }
 }
 
