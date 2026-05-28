@@ -437,15 +437,6 @@ impl Paragraph {
             }
         }
 
-        let state = self.state.lock().unwrap();
-        if let Some(selection) = &state.selection {
-            let all_text = state.text.clone();
-            if pending_line_break {
-                text.push('\n');
-            }
-            text.push_str(&all_text[selection.start..selection.end]);
-        }
-
         text
     }
 }
@@ -453,31 +444,31 @@ impl Paragraph {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Table {
     pub(crate) children: Vec<TableRow>,
-    pub(crate) column_aligns: Vec<ColumnumnAlign>,
+    pub(crate) column_aligns: Vec<ColumnAlign>,
     pub(crate) span: Option<Span>,
 }
 
 impl Table {
-    pub(crate) fn column_align(&self, index: usize) -> ColumnumnAlign {
+    pub(crate) fn column_align(&self, index: usize) -> ColumnAlign {
         self.column_aligns.get(index).copied().unwrap_or_default()
     }
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
-pub(crate) enum ColumnumnAlign {
+pub(crate) enum ColumnAlign {
     #[default]
     Left,
     Center,
     Right,
 }
 
-impl From<mdast::AlignKind> for ColumnumnAlign {
+impl From<mdast::AlignKind> for ColumnAlign {
     fn from(value: mdast::AlignKind) -> Self {
         match value {
-            mdast::AlignKind::None => ColumnumnAlign::Left,
-            mdast::AlignKind::Left => ColumnumnAlign::Left,
-            mdast::AlignKind::Center => ColumnumnAlign::Center,
-            mdast::AlignKind::Right => ColumnumnAlign::Right,
+            mdast::AlignKind::None => ColumnAlign::Left,
+            mdast::AlignKind::Left => ColumnAlign::Left,
+            mdast::AlignKind::Center => ColumnAlign::Center,
+            mdast::AlignKind::Right => ColumnAlign::Right,
         }
     }
 }
@@ -657,6 +648,7 @@ impl CodeBlock {
                         node_cx.clone(),
                         NodeRenderOptions {
                             is_last: true,
+                            list_prefix: None,
                             ..*options
                         },
                     ))
@@ -996,9 +988,9 @@ impl BlockNode {
                     .iter()
                     .map(|align| {
                         match align {
-                            ColumnumnAlign::Left => ":--",
-                            ColumnumnAlign::Center => ":-:",
-                            ColumnumnAlign::Right => "--:",
+                            ColumnAlign::Left => ":--",
+                            ColumnAlign::Center => ":-:",
+                            ColumnAlign::Right => "--:",
                         }
                         .to_string()
                     })
@@ -1260,11 +1252,11 @@ impl BlockNode {
                                                         .id(("cell", ix))
                                                         .overflow_hidden()
                                                         .when(
-                                                            align == ColumnumnAlign::Center,
+                                                            align == ColumnAlign::Center,
                                                             |this| this.text_center(),
                                                         )
                                                         .when(
-                                                            align == ColumnumnAlign::Right,
+                                                            align == ColumnAlign::Right,
                                                             |this| this.text_right(),
                                                         )
                                                         .min_w_16()
@@ -1528,11 +1520,9 @@ mod tests {
             .state
             .lock()
             .unwrap()
-            .set_text("）".into());
-        paragraph.children[2].state.lock().unwrap().selection = Some((0.."）".len()).into());
-
-        paragraph.state.lock().unwrap().set_text("after".into());
-        paragraph.state.lock().unwrap().selection = Some((0.."after".len()).into());
+            .set_text("）after".into());
+        paragraph.children[2].state.lock().unwrap().selection =
+            Some((0.."）after".len()).into());
 
         assert_eq!(paragraph.selected_text(), "text（$x^2$）after");
     }

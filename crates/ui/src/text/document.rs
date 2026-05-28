@@ -3,7 +3,7 @@ use gpui::{
     Styled as _, Window, div,
 };
 
-use crate::text::node::{BlockNode, ColumnumnAlign, NodeContext};
+use crate::text::node::{BlockNode, ColumnAlign, NodeContext};
 
 /// The parsed document AST.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -52,7 +52,7 @@ pub(crate) struct NodeRenderOptions {
     pub(crate) ordered: bool,
     pub(crate) depth: usize,
     pub(crate) is_last: bool,
-    pub(crate) column_align: ColumnumnAlign,
+    pub(crate) column_align: ColumnAlign,
     pub(crate) list_prefix: Option<ListItemPrefix>,
 }
 

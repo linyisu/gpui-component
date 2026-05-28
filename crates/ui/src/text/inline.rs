@@ -21,7 +21,7 @@ use crate::{
     text::{
         document::{ListItemPrefix, NodeRenderOptions},
         math::{MathMetrics, MathNode},
-        node::{ColumnumnAlign, ImageNode, InlineNode, LinkMark, NodeContext, TextMark},
+        node::{ColumnAlign, ImageNode, InlineNode, LinkMark, NodeContext, TextMark},
     },
     tooltip::Tooltip,
 };
@@ -1564,14 +1564,14 @@ fn paragraph_line_offset(
 ) -> Pixels {
     let width = (width - prefix_width).max(px(0.));
     let align = match line.align {
-        ParagraphLineAlign::Center => ColumnumnAlign::Center,
+        ParagraphLineAlign::Center => ColumnAlign::Center,
         ParagraphLineAlign::Column => options.column_align,
     };
     prefix_width
         + match align {
-            ColumnumnAlign::Left => px(0.),
-            ColumnumnAlign::Center => (width - line.width).max(px(0.)) / 2.,
-            ColumnumnAlign::Right => (width - line.width).max(px(0.)),
+            ColumnAlign::Left => px(0.),
+            ColumnAlign::Center => (width - line.width).max(px(0.)) / 2.,
+            ColumnAlign::Right => (width - line.width).max(px(0.)),
         }
 }
 
