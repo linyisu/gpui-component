@@ -349,11 +349,10 @@ fn align_paragraph_inline_prefix(layout: &mut ParagraphInlineComputed) {
             let metrics = shaped_text_line_metrics(marker, *height);
             *y = line.y + line.ascent - metrics.ascent;
         }
-        ParagraphInlinePrefix::Marker { .. } => {}
         ParagraphInlinePrefix::Todo { y, size, .. } => {
-            let line_height = line.ascent + line.descent;
-            *y = line.y + (line_height - *size) / 2.;
+            *y = line.y + line.ascent - *size * 0.9;
         }
+        _ => {}
     }
 }
 
