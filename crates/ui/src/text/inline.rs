@@ -693,14 +693,12 @@ fn compute_paragraph_inline_layout(
                     window,
                     cx,
                 );
-                if !line.items.is_empty() || !computed.lines.is_empty() {
-                    finish_paragraph_inline_line(
-                        &mut computed,
-                        &mut line,
-                        prefix_width,
-                        default_metrics,
-                    );
-                }
+                finish_paragraph_inline_line(
+                    &mut computed,
+                    &mut line,
+                    prefix_width,
+                    default_metrics,
+                );
             }
             ParagraphInlineItem::Image(image) => {
                 let (size, metrics) = layout_inline_image(image.size, wrap_width, default_metrics);
@@ -2090,5 +2088,63 @@ mod inline_selection_tests {
             end,
             line_height
         ));
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use std::sync::{Arc, Mutex};
+
+    use gpui::{
+        Context, IntoElement, Render, SharedString, Styled as _, TestAppContext, VisualTestContext,
+        Window, div, px,
+    };
+
+    use crate::init;
+
+    use super::{
+        InlineState, compute_paragraph_inline_layout, paragraph_inline_highlighted_text_items,
+    };
+
+    struct LayoutTestRoot;
+
+    impl Render for LayoutTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(400.)).h(px(200.))
+        }
+    }
+
+    #[gpui::test]
+    fn highlighted_text_keeps_leading_blank_line(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (_, cx) = cx.add_window_view(|_, _| LayoutTestRoot);
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let state = Arc::new(Mutex::new(InlineState::default()));
+            let source: SharedString = "\nfirst".into();
+            state.lock().unwrap().set_text(source.clone());
+
+            let items = paragraph_inline_highlighted_text_items(source, state, vec![]);
+            let line_height = window.text_style().line_height_in_pixels(window.rem_size());
+            let layout = compute_paragraph_inline_layout(
+                &items,
+                Some(px(400.)),
+                None,
+                &window.text_style(),
+                window,
+                cx,
+            );
+
+            assert_eq!(layout.lines.len(), 2);
+            assert!(layout.lines[0].items.is_empty());
+            assert_eq!(layout.lines[0].y, px(0.));
+            assert!(matches!(
+                &layout.lines[1].items[0],
+                super::ParagraphInlineLayoutItem::Text(_)
+            ));
+            assert_eq!(layout.lines[1].y, line_height);
+        });
     }
 }
