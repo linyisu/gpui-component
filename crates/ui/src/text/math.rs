@@ -15,7 +15,8 @@ mod real {
     use gpui::{
         App, Bounds, Element, ElementId, FillOptions, FillRule, GlobalElementId, Hsla,
         InspectorElementId, IntoElement, LayoutId, PathBuilder, PathStyle, Pixels, Rgba,
-        SharedString, Style, TextRun, TextSystem, Window, fill, font, point, px, size,
+        ShapedLine, SharedString, Style, TextAlign, TextRun, TextSystem, Window, fill, font, point,
+        px, size,
     };
     use ratex_font::{FontId, katex_ttf_glyph_char};
     use ratex_layout::{LayoutOptions, layout, to_display_list};
@@ -37,7 +38,7 @@ mod real {
         source: SharedString,
         markdown_source: SharedString,
         display: bool,
-        display_list: DisplayList,
+        display_list: Option<DisplayList>,
         state: Arc<Mutex<InlineState>>,
         span: Option<Span>,
     }
@@ -78,10 +79,30 @@ mod real {
                 source,
                 markdown_source,
                 display,
-                display_list,
+                display_list: Some(display_list),
                 state,
                 span: None,
             })
+        }
+
+        pub(crate) fn fallback(
+            source: impl Into<SharedString>,
+            markdown_source: impl Into<SharedString>,
+            display: bool,
+        ) -> Self {
+            let source = source.into();
+            let markdown_source = markdown_source.into();
+            let state = Arc::new(Mutex::new(InlineState::default()));
+            state.lock().unwrap().set_text(markdown_source.clone());
+
+            Self {
+                source,
+                markdown_source,
+                display,
+                display_list: None,
+                state,
+                span: None,
+            }
         }
 
         pub(crate) fn with_span(mut self, span: Option<Span>) -> Self {
@@ -181,6 +202,11 @@ mod real {
 
         fn layout_for(&self, window: &Window) -> (MathLayout, super::MathMetrics) {
             let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+            if self.node.display_list.is_none() {
+                return self.fallback_layout_for(font_size, window);
+            }
+
+            let display_list = self.node.display_list.as_ref().unwrap();
             let em = if self.node.display {
                 font_size * 1.1
             } else {
@@ -188,15 +214,48 @@ mod real {
             };
             let padding = MATH_PADDING;
             let em_px = f32::from(em);
-            let width = px((self.node.display_list.width as f32 * em_px).max(1.)) + padding * 2.;
-            let ascent = px((self.node.display_list.height as f32 * em_px).max(0.)) + padding;
-            let descent = px((self.node.display_list.depth as f32 * em_px).max(0.)) + padding;
+            let width = px((display_list.width as f32 * em_px).max(1.)) + padding * 2.;
+            let ascent = px((display_list.height as f32 * em_px).max(0.)) + padding;
+            let descent = px((display_list.depth as f32 * em_px).max(0.)) + padding;
             let height = (ascent + descent).max(px(1.));
 
             (
                 MathLayout { em, padding },
                 super::MathMetrics {
                     size: size(width, height),
+                    ascent,
+                    descent,
+                },
+            )
+        }
+
+        fn fallback_layout_for(
+            &self,
+            font_size: Pixels,
+            window: &Window,
+        ) -> (MathLayout, super::MathMetrics) {
+            let padding = MATH_PADDING;
+            let line_height = window.text_style().line_height_in_pixels(window.rem_size());
+            let mut width = px(1.);
+            let mut line_count = 0;
+
+            for line in fallback_math_lines(&self.node.markdown_source) {
+                line_count += 1;
+                width = width.max(
+                    shape_fallback_line(line, font_size, window.text_style().color, window).width(),
+                );
+            }
+
+            let content_height = line_height * line_count.max(1) as f32;
+            let ascent = content_height + padding;
+            let descent = padding;
+            (
+                MathLayout {
+                    em: font_size,
+                    padding,
+                },
+                super::MathMetrics {
+                    size: size(width + padding * 2., ascent + descent),
                     ascent,
                     descent,
                 },
@@ -244,10 +303,59 @@ mod real {
                 window.paint_quad(fill(bounds, cx.theme().selection));
             }
 
-            for item in &self.node.display_list.items {
+            let Some(display_list) = &self.node.display_list else {
+                self.paint_fallback(origin, text_color, window, cx);
+                return;
+            };
+
+            for item in &display_list.items {
                 paint_display_item(item, origin, layout.em, text_color, window);
             }
         }
+
+        fn paint_fallback(
+            &self,
+            origin: gpui::Point<Pixels>,
+            text_color: Hsla,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+            let line_height = window.text_style().line_height_in_pixels(window.rem_size());
+            for (ix, text) in fallback_math_lines(&self.node.markdown_source)
+                .into_iter()
+                .enumerate()
+            {
+                let line = shape_fallback_line(text, font_size, text_color, window);
+                let origin = origin + point(px(0.), line_height * ix as f32);
+                let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
+            }
+        }
+    }
+
+    fn fallback_math_lines(source: &SharedString) -> Vec<&str> {
+        let lines = source.as_ref().lines().collect::<Vec<_>>();
+        if lines.is_empty() { vec![""] } else { lines }
+    }
+
+    fn shape_fallback_line(
+        text: &str,
+        font_size: Pixels,
+        color: Hsla,
+        window: &Window,
+    ) -> ShapedLine {
+        let text: SharedString = text.to_string().into();
+        let run = TextRun {
+            len: text.len(),
+            font: window.text_style().font().clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window
+            .text_system()
+            .shape_line(text, font_size, &[run], None)
     }
 
     fn bounds_intersects_selection(
@@ -838,13 +946,15 @@ mod real {
 
             let bars: Vec<_> = math
                 .display_list
+                .as_ref()
+                .unwrap()
                 .items
                 .iter()
                 .filter_map(|item| match item {
                     ratex_types::DisplayItem::GlyphPath { char_code, x, .. }
                         if *char_code == '∣' as u32 || *char_code == '|' as u32 =>
                     {
-                        Some(*x)
+                        Some(x)
                     }
                     _ => None,
                 })
@@ -867,6 +977,8 @@ mod real {
 
             let bar_count = math
                 .display_list
+                .as_ref()
+                .unwrap()
                 .items
                 .iter()
                 .filter(|item| match item {
@@ -886,16 +998,21 @@ mod real {
             let math = MathNode::try_new(format!("\\text{{{cjk}}}"), false).unwrap();
 
             assert!(
-                math.display_list.items.iter().any(|item| {
-                    matches!(
-                        item,
-                        ratex_types::DisplayItem::GlyphPath {
-                            font,
-                            char_code,
-                            ..
+                math.display_list
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .any(|item| {
+                        matches!(
+                            item,
+                            ratex_types::DisplayItem::GlyphPath {
+                                font,
+                                char_code,
+                                ..
                         } if font == "CJK-Regular" && char::from_u32(*char_code) == Some(cjk)
-                    )
-                }),
+                        )
+                    }),
                 "expected CJK fallback glyph to stay in the display list"
             );
             assert!(super::is_system_fallback_font(
@@ -905,16 +1022,21 @@ mod real {
             let emoji = '\u{1F60A}';
             let math = MathNode::try_new(format!("\\text{{{emoji}}}"), false).unwrap();
             assert!(
-                math.display_list.items.iter().any(|item| {
-                    matches!(
-                        item,
-                        ratex_types::DisplayItem::GlyphPath {
-                            font,
-                            char_code,
-                            ..
+                math.display_list
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .any(|item| {
+                        matches!(
+                            item,
+                            ratex_types::DisplayItem::GlyphPath {
+                                font,
+                                char_code,
+                                ..
                         } if font == "CJK-Regular" && char::from_u32(*char_code) == Some(emoji)
-                    )
-                }),
+                        )
+                    }),
                 "expected emoji fallback glyph to stay in the display list"
             );
             assert!(super::is_system_fallback_font(
@@ -969,6 +1091,19 @@ mod no_math {
             _display: bool,
         ) -> Result<Self, SharedString> {
             Err("markdown math feature is disabled".into())
+        }
+
+        pub(crate) fn fallback(
+            source: impl Into<SharedString>,
+            markdown_source: impl Into<SharedString>,
+            display: bool,
+        ) -> Self {
+            Self {
+                source: source.into(),
+                markdown_source: markdown_source.into(),
+                display,
+                span: None,
+            }
         }
 
         pub(crate) fn with_span(mut self, span: Option<Span>) -> Self {

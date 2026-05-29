@@ -85,6 +85,11 @@ impl<'a> MarkdownParseContext<'a> {
         let position = node.position.as_ref()?;
         self.source.get(position.start.offset..position.end.offset)
     }
+
+    fn source_for_position(&self, position: Option<&markdown::unist::Position>) -> Option<&'a str> {
+        let position = position?;
+        self.source.get(position.start.offset..position.end.offset)
+    }
 }
 
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, ctx: &mut MarkdownParseContext<'_>) {
@@ -444,24 +449,28 @@ fn ast_to_document(root: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> Par
 
 /// Setext heading false-positive inside list items: the markdown parser may
 /// interpret `- [x] text\n  -` as a Heading inside a ListItem because it treats
-/// the lone `-` on the continuation line as a setext underline. Since real
-/// headings don't appear as list-item children, demote them to paragraphs and
-/// recover the checkbox state that the parser missed.
+/// the lone `-` on the continuation line as a setext underline. Only demote
+/// that checkbox-prefixed case and recover the checkbox state that the parser
+/// missed.
 fn fix_setext_false_positive_in_list_item(
     children: &mut Vec<BlockNode>,
     checked: &mut Option<bool>,
 ) {
     for child in children.iter_mut() {
-        if let BlockNode::Heading { children: paragraph, .. } = child {
-            // When the heading text starts with a checkbox marker like
-            // "[x] " or "[ ] ", recover the checked state.
-            if checked.is_none() {
-                if let Some((is_checked, stripped_len)) =
-                    detect_checkbox_prefix(paragraph)
-                {
+        if let BlockNode::Heading {
+            children: paragraph,
+            ..
+        } = child
+        {
+            // Only demote the checkbox-prefixed false-positive; leave other
+            // headings inside list items untouched.
+            if let Some((is_checked, stripped_len)) = detect_checkbox_prefix(paragraph) {
+                if checked.is_none() {
                     *checked = Some(is_checked);
-                    strip_paragraph_prefix(paragraph, stripped_len);
                 }
+                strip_paragraph_prefix(paragraph, stripped_len);
+            } else {
+                continue;
             }
             *child = BlockNode::Paragraph(paragraph.take());
         }
@@ -576,15 +585,16 @@ fn ast_to_node(value: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> BlockN
             }
         }
         Node::Math(val) => {
+            let markdown_source = ctx
+                .source_for_position(val.position.as_ref())
+                .map(SharedString::from)
+                .unwrap_or_else(|| format!("$$\n{}\n$$", val.value).into());
             let span = ctx.span(val.position);
             match MathNode::try_new(val.value.clone(), true) {
                 Ok(math) => BlockNode::Math(math.with_span(span)),
-                Err(_) => BlockNode::CodeBlock(CodeBlock::new(
-                    val.value.into(),
-                    None,
-                    ctx.highlight_theme,
-                    span,
-                )),
+                Err(_) => BlockNode::Math(
+                    MathNode::fallback(val.value, markdown_source, true).with_span(span),
+                ),
             }
         }
         Node::Html(val) => match super::html::parse(&val.value, &mut *ctx.node_cx) {
@@ -1058,6 +1068,37 @@ mod tests {
 
     #[cfg(feature = "markdown-math")]
     #[test]
+    fn test_unsupported_block_math_preserves_markdown_source() {
+        let mut cx = NodeContext::default();
+        let source = "$$\n\\frac{1\n$$";
+        assert!(
+            MathNode::try_new("\\frac{1", true).is_err(),
+            "test input should exercise the unsupported math fallback"
+        );
+
+        let document = parse(source, &mut cx, &HighlightTheme::default_light()).unwrap();
+
+        let BlockNode::Math(math) = &document.blocks[0] else {
+            panic!("expected unsupported block math to remain a math node");
+        };
+
+        assert_eq!(math.markdown_source().as_ref(), source);
+        assert_eq!(document.to_markdown(), source);
+
+        let round_tripped = parse(
+            &document.to_markdown(),
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+        assert!(
+            matches!(round_tripped.blocks[0], BlockNode::Math(_)),
+            "unsupported block math should not round-trip as a code block"
+        );
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
     fn test_list_item_block_math_parses_to_math_node() {
         let mut cx = NodeContext::default();
         let document = parse(
@@ -1082,6 +1123,66 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn test_list_item_block_math_to_markdown_keeps_list_scope() {
+        let mut cx = NodeContext::default();
+        let source = "1. A list item\n\n   $$\n   x^2 + y^2 = z^2\n   $$";
+        let document = parse(source, &mut cx, &HighlightTheme::default_light()).unwrap();
+
+        assert_eq!(document.to_markdown(), source);
+
+        let round_tripped = parse(
+            &document.to_markdown(),
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+        let BlockNode::List { children, .. } = &round_tripped.blocks[0] else {
+            panic!("expected list");
+        };
+        let BlockNode::ListItem { children, .. } = &children[0] else {
+            panic!("expected list item");
+        };
+
+        assert!(
+            children
+                .iter()
+                .any(|child| matches!(child, BlockNode::Math(_))),
+            "round-tripped block math should remain inside the list item"
+        );
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn test_list_item_starting_with_block_math_to_markdown_keeps_list_scope() {
+        let mut cx = NodeContext::default();
+        let source = "- $$\n  x^2 + y^2 = z^2\n  $$";
+        let document = parse(source, &mut cx, &HighlightTheme::default_light()).unwrap();
+
+        assert_eq!(document.to_markdown(), source);
+
+        let round_tripped = parse(
+            &document.to_markdown(),
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+        let BlockNode::List { children, .. } = &round_tripped.blocks[0] else {
+            panic!("expected list");
+        };
+        let BlockNode::ListItem { children, .. } = &children[0] else {
+            panic!("expected list item");
+        };
+
+        assert!(
+            children
+                .iter()
+                .any(|child| matches!(child, BlockNode::Math(_))),
+            "round-tripped block math should remain inside the list item"
+        );
+    }
+
     #[test]
     fn test_todo_list_parses_with_nested_list() {
         let mut cx = NodeContext::default();
@@ -1092,22 +1193,30 @@ mod tests {
         )
         .unwrap();
 
-        let BlockNode::List { children, ordered, .. } = &document.blocks[0] else {
+        let BlockNode::List {
+            children, ordered, ..
+        } = &document.blocks[0]
+        else {
             panic!("expected list, got {:?}", document.blocks[0]);
         };
         assert!(!ordered);
 
         let BlockNode::ListItem {
             children: item1_children,
-            checked, ..
-        } = &children[0] else {
+            checked,
+            ..
+        } = &children[0]
+        else {
             panic!("expected list item");
         };
         assert_eq!(*checked, Some(true));
 
         assert_eq!(item1_children.len(), 2);
 
-        let BlockNode::List { children: nested, .. } = &item1_children[1] else {
+        let BlockNode::List {
+            children: nested, ..
+        } = &item1_children[1]
+        else {
             panic!("expected nested list as second child");
         };
         assert_eq!(nested.len(), 1);
@@ -1115,7 +1224,8 @@ mod tests {
         let BlockNode::ListItem {
             checked: nested_checked,
             ..
-        } = &nested[0] else {
+        } = &nested[0]
+        else {
             panic!("expected nested list item");
         };
         assert_eq!(*nested_checked, None);
@@ -1150,7 +1260,9 @@ mod tests {
 
         // Children should contain a Paragraph (demoted from Heading), not a Heading
         assert!(
-            item_children.iter().all(|c| !matches!(c, BlockNode::Heading { .. })),
+            item_children
+                .iter()
+                .all(|c| !matches!(c, BlockNode::Heading { .. })),
             "heading should have been demoted to paragraph"
         );
         assert!(
@@ -1158,6 +1270,68 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, BlockNode::Paragraph(_))),
             "should have a paragraph child"
+        );
+    }
+
+    #[test]
+    fn test_atx_heading_in_list_item_stays_heading() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "- # Heading in list",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::List { children, .. } = &document.blocks[0] else {
+            panic!("expected list");
+        };
+        let BlockNode::ListItem {
+            children: item_children,
+            checked,
+            ..
+        } = &children[0]
+        else {
+            panic!("expected list item");
+        };
+
+        assert_eq!(*checked, None);
+        assert!(
+            item_children
+                .iter()
+                .any(|c| matches!(c, BlockNode::Heading { level: 1, .. })),
+            "ATX heading inside a list item should stay a heading"
+        );
+    }
+
+    #[test]
+    fn test_nested_heading_in_list_item_stays_heading() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "- item\n\n  ## Nested heading",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::List { children, .. } = &document.blocks[0] else {
+            panic!("expected list");
+        };
+        let BlockNode::ListItem {
+            children: item_children,
+            checked,
+            ..
+        } = &children[0]
+        else {
+            panic!("expected list item");
+        };
+
+        assert_eq!(*checked, None);
+        assert!(
+            item_children
+                .iter()
+                .any(|c| matches!(c, BlockNode::Heading { level: 2, .. })),
+            "nested heading inside a list item should stay a heading"
         );
     }
 

@@ -932,7 +932,7 @@ impl Paragraph {
 }
 
 impl Paragraph {
-    fn to_markdown(&self) -> String {
+    fn to_inline_markdown(&self) -> String {
         let mut text = String::new();
         let mut pending = None;
 
@@ -996,9 +996,31 @@ impl Paragraph {
             text.push_str(&pending.finish());
         }
 
+        text
+    }
+
+    fn to_markdown(&self) -> String {
+        let mut text = self.to_inline_markdown();
         text.push_str("\n\n");
         text
     }
+}
+
+fn indent_markdown_continuation_lines(markdown: &str, indent: &str) -> String {
+    let mut lines = markdown.lines();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+
+    let mut text = first.to_string();
+    for line in lines {
+        text.push('\n');
+        if !line.is_empty() {
+            text.push_str(indent);
+        }
+        text.push_str(line);
+    }
+    text
 }
 
 impl BlockNode {
@@ -1044,7 +1066,9 @@ impl BlockNode {
                     } else {
                         "- ".to_string()
                     };
-                    format!("{}{}", prefix, child.to_markdown())
+                    let indent = " ".repeat(prefix.len());
+                    let content = indent_markdown_continuation_lines(&child.to_markdown(), &indent);
+                    format!("{}{}", prefix, content)
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -1063,7 +1087,7 @@ impl BlockNode {
                         .iter()
                         .map(|child| child.to_markdown())
                         .collect::<Vec<_>>()
-                        .join("\n")
+                        .join("\n\n")
                 )
             }
             BlockNode::CodeBlock(code_block) => {
@@ -1081,12 +1105,7 @@ impl BlockNode {
                     .map(|row| {
                         row.children
                             .iter()
-                            .map(|cell| {
-                                cell.children
-                                    .to_markdown()
-                                    .trim_end_matches('\n')
-                                    .to_string()
-                            })
+                            .map(|cell| cell.children.to_inline_markdown())
                             .collect::<Vec<_>>()
                             .join(" | ")
                     })
@@ -1111,12 +1130,7 @@ impl BlockNode {
                     .map(|row| {
                         row.children
                             .iter()
-                            .map(|cell| {
-                                cell.children
-                                    .to_markdown()
-                                    .trim_end_matches('\n')
-                                    .to_string()
-                            })
+                            .map(|cell| cell.children.to_inline_markdown())
                             .collect::<Vec<_>>()
                             .join(" | ")
                     })
