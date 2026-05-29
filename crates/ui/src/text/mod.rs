@@ -3,6 +3,7 @@ mod format;
 mod inline;
 mod math;
 mod node;
+pub(crate) mod selection;
 mod state;
 mod style;
 mod text_view;

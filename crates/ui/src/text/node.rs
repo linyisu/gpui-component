@@ -84,6 +84,12 @@ pub(crate) enum BlockNode {
     Unknown,
 }
 
+#[derive(Clone, Copy)]
+enum BlockTextKind {
+    All,
+    Selected,
+}
+
 impl BlockNode {
     pub(super) fn is_list_item(&self) -> bool {
         matches!(self, Self::ListItem { .. })
@@ -120,50 +126,49 @@ impl BlockNode {
         }
     }
 
+    pub(super) fn text(&self) -> String {
+        self.text_by_kind(BlockTextKind::All)
+    }
+
     pub(super) fn selected_text(&self) -> String {
+        self.text_by_kind(BlockTextKind::Selected)
+    }
+
+    fn text_by_kind(&self, kind: BlockTextKind) -> String {
         let mut text = String::new();
         match self {
             BlockNode::Root { children, .. } => {
-                let mut block_text = String::new();
-                for c in children.iter() {
-                    block_text.push_str(&c.selected_text());
-                }
+                let block_text = Self::children_text(children, kind);
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
                     text.push('\n');
                 }
             }
             BlockNode::Paragraph(paragraph) => {
-                let mut block_text = String::new();
-                block_text.push_str(&paragraph.selected_text());
+                let block_text = match kind {
+                    BlockTextKind::All => paragraph.text(),
+                    BlockTextKind::Selected => paragraph.selected_text(),
+                };
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
                     text.push('\n');
                 }
             }
             BlockNode::Heading { children, .. } => {
-                let mut block_text = String::new();
-                block_text.push_str(&children.selected_text());
+                let block_text = match kind {
+                    BlockTextKind::All => children.text(),
+                    BlockTextKind::Selected => children.selected_text(),
+                };
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
                     text.push('\n');
                 }
             }
-            BlockNode::List { children, .. } => {
-                for c in children.iter() {
-                    text.push_str(&c.selected_text());
-                }
-            }
-            BlockNode::ListItem { children, .. } => {
-                for c in children.iter() {
-                    text.push_str(&c.selected_text());
-                }
+            BlockNode::List { children, .. } | BlockNode::ListItem { children, .. } => {
+                text.push_str(&Self::children_text(children, kind));
             }
             BlockNode::Blockquote { children, .. } => {
-                let mut block_text = String::new();
-                for c in children.iter() {
-                    block_text.push_str(&c.selected_text());
-                }
+                let block_text = Self::children_text(children, kind);
 
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
@@ -175,7 +180,10 @@ impl BlockNode {
                 for row in table.children.iter() {
                     let mut row_texts = vec![];
                     for cell in row.children.iter() {
-                        row_texts.push(cell.children.selected_text());
+                        row_texts.push(match kind {
+                            BlockTextKind::All => cell.children.text(),
+                            BlockTextKind::Selected => cell.children.selected_text(),
+                        });
                     }
                     if !row_texts.is_empty() {
                         block_text.push_str(&row_texts.join(" "));
@@ -189,14 +197,20 @@ impl BlockNode {
                 }
             }
             BlockNode::CodeBlock(code_block) => {
-                let block_text = code_block.selected_text();
+                let block_text = match kind {
+                    BlockTextKind::All => code_block.text(),
+                    BlockTextKind::Selected => code_block.selected_text(),
+                };
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
                     text.push('\n');
                 }
             }
             BlockNode::Math(math) => {
-                let block_text = math.selected_text();
+                let block_text = match kind {
+                    BlockTextKind::All => math.markdown_source().to_string(),
+                    BlockTextKind::Selected => math.selected_text(),
+                };
                 if !block_text.is_empty() {
                     text.push_str(&block_text);
                     text.push('\n');
@@ -206,6 +220,15 @@ impl BlockNode {
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
             | BlockNode::Unknown { .. } => {}
+        }
+
+        text
+    }
+
+    fn children_text(children: &[BlockNode], kind: BlockTextKind) -> String {
+        let mut text = String::new();
+        for child in children.iter() {
+            text.push_str(&child.text_by_kind(kind));
         }
 
         text
@@ -420,12 +443,12 @@ impl Paragraph {
         for c in self.children.iter() {
             let mut selected = String::new();
 
-            let state = c.state.lock().unwrap();
-            if let Some(selection) = &state.selection {
-                let part_text = state.text.clone();
-                selected.push_str(&part_text[selection.start..selection.end]);
+            if let Ok(state) = c.state.lock() {
+                if let Some(selection) = &state.selection {
+                    let part_text = state.text.clone();
+                    selected.push_str(&part_text[selection.start..selection.end]);
+                }
             }
-            drop(state);
 
             if let Some(math) = &c.math {
                 selected.push_str(&math.selected_text());
@@ -444,6 +467,20 @@ impl Paragraph {
             }
         }
 
+        text
+    }
+
+    pub(super) fn text(&self) -> String {
+        let mut text = String::new();
+        for node in self.children.iter() {
+            if node.line_break {
+                text.push('\n');
+            } else if let Some(math) = &node.math {
+                text.push_str(math.markdown_source().as_ref());
+            } else {
+                text.push_str(&node.text);
+            }
+        }
         text
     }
 }
@@ -665,6 +702,13 @@ impl CodeBlock {
             text.push_str(&part_text[selection.start..selection.end]);
         }
         text
+    }
+
+    pub(super) fn text(&self) -> String {
+        self.state
+            .lock()
+            .map(|state| state.text.to_string())
+            .unwrap_or_default()
     }
 
     fn render(
@@ -1303,10 +1347,9 @@ impl BlockNode {
                                                             align == ColumnAlign::Center,
                                                             |this| this.text_center(),
                                                         )
-                                                        .when(
-                                                            align == ColumnAlign::Right,
-                                                            |this| this.text_right(),
-                                                        )
+                                                        .when(align == ColumnAlign::Right, |this| {
+                                                            this.text_right()
+                                                        })
                                                         .min_w_16()
                                                         .w(Length::Definite(relative(len as f32)))
                                                         .px_2()
@@ -1647,8 +1690,7 @@ mod tests {
             .lock()
             .unwrap()
             .set_text("）after".into());
-        paragraph.children[2].state.lock().unwrap().selection =
-            Some((0.."）after".len()).into());
+        paragraph.children[2].state.lock().unwrap().selection = Some((0.."）after".len()).into());
 
         assert_eq!(paragraph.selected_text(), "text（$x^2$）after");
     }
