@@ -1081,7 +1081,12 @@ impl BlockNode {
                     .map(|row| {
                         row.children
                             .iter()
-                            .map(|cell| cell.children.to_markdown().trim_end_matches('\n').to_string())
+                            .map(|cell| {
+                                cell.children
+                                    .to_markdown()
+                                    .trim_end_matches('\n')
+                                    .to_string()
+                            })
                             .collect::<Vec<_>>()
                             .join(" | ")
                     })
@@ -1106,7 +1111,12 @@ impl BlockNode {
                     .map(|row| {
                         row.children
                             .iter()
-                            .map(|cell| cell.children.to_markdown().trim_end_matches('\n').to_string())
+                            .map(|cell| {
+                                cell.children
+                                    .to_markdown()
+                                    .trim_end_matches('\n')
+                                    .to_string()
+                            })
                             .collect::<Vec<_>>()
                             .join(" | ")
                     })
@@ -1142,6 +1152,29 @@ impl BlockNode {
 }
 
 impl BlockNode {
+    fn render_list_prefix_line(
+        prefix: ListItemPrefix,
+        options: NodeRenderOptions,
+        child_ix: usize,
+        node_cx: &NodeContext,
+    ) -> Div {
+        div().w_full().min_w_0().overflow_hidden().child(
+            ParagraphInlineLayout::new(
+                ElementId::Name(format!("list-prefix-{}-{}", options.ix, child_ix).into()),
+                vec![],
+                node_cx.clone(),
+                NodeRenderOptions {
+                    depth: options.depth + 1,
+                    in_list: true,
+                    is_last: true,
+                    list_prefix: Some(prefix),
+                    ..options
+                },
+            )
+            .into_any_element(),
+        )
+    }
+
     fn render_list_item(
         item: &BlockNode,
         ix: usize,
@@ -1200,29 +1233,34 @@ impl BlockNode {
                             }
                             BlockNode::List { .. } => {
                                 if let Some(prefix) = list_prefix.take() {
-                                    items.push(
-                                        div().w_full().min_w_0().overflow_hidden().child(
-                                            ParagraphInlineLayout::new(
-                                                ElementId::Name(
-                                                    format!(
-                                                        "list-prefix-{}-{}",
-                                                        options.ix, child_ix
-                                                    )
-                                                    .into(),
-                                                ),
-                                                vec![],
-                                                node_cx.clone(),
-                                                NodeRenderOptions {
-                                                    depth: options.depth + 1,
-                                                    in_list: true,
-                                                    is_last: true,
-                                                    list_prefix: Some(prefix),
-                                                    ..options
-                                                },
-                                            )
-                                            .into_any_element(),
-                                        ),
-                                    );
+                                    items.push(Self::render_list_prefix_line(
+                                        prefix, options, child_ix, node_cx,
+                                    ));
+                                }
+
+                                items.push(div().ml(rems(1.)).child(child.render_block(
+                                    NodeRenderOptions {
+                                        depth: options.depth + 1,
+                                        in_list: true,
+                                        is_last: true,
+                                        list_prefix: None,
+                                        ..options
+                                    },
+                                    node_cx,
+                                    window,
+                                    cx,
+                                )));
+                            }
+                            BlockNode::CodeBlock(_)
+                            | BlockNode::Table(_)
+                            | BlockNode::Blockquote { .. }
+                            | BlockNode::HorizontalRule { .. } => {
+                                // Keep the list marker at the list-item boundary and
+                                // do not leak it into descendant block content.
+                                if let Some(prefix) = list_prefix.take() {
+                                    items.push(Self::render_list_prefix_line(
+                                        prefix, options, child_ix, node_cx,
+                                    ));
                                 }
 
                                 items.push(div().ml(rems(1.)).child(child.render_block(
@@ -1372,6 +1410,7 @@ impl BlockNode {
                                                         .child(cell.children.render(
                                                             NodeRenderOptions {
                                                                 column_align: align,
+                                                                list_prefix: None,
                                                                 ..*options
                                                             },
                                                             node_cx,
@@ -1464,7 +1503,15 @@ impl BlockNode {
                             let children_len = children.len();
                             children.into_iter().enumerate().map(move |(index, c)| {
                                 let is_last = index == children_len - 1;
-                                c.render_block(options.is_last(is_last), node_cx, window, cx)
+                                c.render_block(
+                                    NodeRenderOptions {
+                                        list_prefix: None,
+                                        ..options.is_last(is_last)
+                                    },
+                                    node_cx,
+                                    window,
+                                    cx,
+                                )
                             })
                         }),
                 )

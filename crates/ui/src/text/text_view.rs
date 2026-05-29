@@ -366,6 +366,10 @@ mod tests {
         text_view: Entity<TextViewState>,
     }
 
+    struct MixedListTextViewTestRoot {
+        text_view: Entity<TextViewState>,
+    }
+
     impl TextViewTestRoot {
         fn new(text: &str, cx: &mut Context<Self>) -> Self {
             let text = text.to_string();
@@ -396,11 +400,28 @@ mod tests {
         }
     }
 
+    impl MixedListTextViewTestRoot {
+        fn new(text: &str, cx: &mut Context<Self>) -> Self {
+            let text = text.to_string();
+            let text_view = cx.new(|cx| TextViewState::markdown(&text, cx));
+            Self { text_view }
+        }
+    }
+
     impl Render for WideTextViewTestRoot {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .w(px(1800.))
                 .h(px(80.))
+                .child(TextView::new(&self.text_view).selectable(true))
+        }
+    }
+
+    impl Render for MixedListTextViewTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(900.))
+                .h(px(420.))
                 .child(TextView::new(&self.text_view).selectable(true))
         }
     }
@@ -534,6 +555,31 @@ mod tests {
                 " of GPUI Component."
             )
         );
+    }
+
+    #[gpui::test]
+    fn list_items_with_block_children_render(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let markdown = concat!(
+            "- paragraph item\n",
+            "\n",
+            "  continuation paragraph that should stay under the same item.\n",
+            "- ```rs\n",
+            "  fn main() {}\n",
+            "  ```\n",
+            "- > quote first\n",
+            "  >\n",
+            "  > quote second\n",
+            "- | A | B |\n",
+            "  |---|---|\n",
+            "  | x | y |\n",
+        );
+        let (_, cx) = cx.add_window_view(|_, cx| MixedListTextViewTestRoot::new(markdown, cx));
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
     }
 
     #[gpui::test]
