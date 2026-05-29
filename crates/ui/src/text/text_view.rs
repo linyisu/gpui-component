@@ -362,6 +362,10 @@ mod tests {
         text_view: Entity<TextViewState>,
     }
 
+    struct WideTextViewTestRoot {
+        text_view: Entity<TextViewState>,
+    }
+
     impl TextViewTestRoot {
         fn new(text: &str, cx: &mut Context<Self>) -> Self {
             let text = text.to_string();
@@ -381,6 +385,23 @@ mod tests {
                         .child(TextView::new(&self.text_view).selectable(true)),
                 )
                 .child(div().h(px(40.)).child("footer"))
+        }
+    }
+
+    impl WideTextViewTestRoot {
+        fn new(text: &str, cx: &mut Context<Self>) -> Self {
+            let text = text.to_string();
+            let text_view = cx.new(|cx| TextViewState::markdown(&text, cx));
+            Self { text_view }
+        }
+    }
+
+    impl Render for WideTextViewTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(1800.))
+                .h(px(80.))
+                .child(TextView::new(&self.text_view).selectable(true))
         }
     }
 
@@ -425,6 +446,127 @@ mod tests {
             selected_text.is_empty(),
             "unexpected selection: {selected_text:?}"
         );
+    }
+
+    #[gpui::test]
+    fn selected_inline_image_copies_markdown_source(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            TextViewTestRoot::new(
+                "A [![B](https://example.com/b.svg)](https://example.com/ci) C",
+                cx,
+            )
+        });
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        cx.simulate_mouse_down(
+            point(px(0.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(155.), px(16.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(155.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(
+            selected_text.trim(),
+            "A [![B](https://example.com/b.svg)](https://example.com/ci) C"
+        );
+    }
+
+    #[gpui::test]
+    fn selected_build_status_keeps_inline_image_source(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let markdown = concat!(
+            "Build Status ",
+            "[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)]",
+            "(https://github.com/longbridge/gpui-component/actions/workflows/ci.yml)",
+            " of [GPUI Component](https://github.com/longbridge/gpui-component)."
+        );
+        let (view, cx) = cx.add_window_view(|_, cx| WideTextViewTestRoot::new(markdown, cx));
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        cx.simulate_mouse_down(
+            point(px(0.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(1750.), px(16.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(1750.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(
+            selected_text.trim(),
+            concat!(
+                "Build Status ",
+                "[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)]",
+                "(https://github.com/longbridge/gpui-component/actions/workflows/ci.yml)",
+                " of GPUI Component."
+            )
+        );
+    }
+
+    #[gpui::test]
+    fn double_click_selects_inline_image(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx
+            .add_window_view(|_, cx| TextViewTestRoot::new("![B](https://example.com/b.svg)", cx));
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let position = point(px(5.), px(16.));
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(selected_text, "![B](https://example.com/b.svg)");
     }
 
     #[gpui::test]

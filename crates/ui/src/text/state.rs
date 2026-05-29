@@ -598,7 +598,14 @@ mod tests {
     #[gpui::test]
     fn select_all_returns_rendered_text(cx: &mut TestAppContext) {
         cx.update(crate::init);
-        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("**quick** value", cx)));
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::markdown(
+                    "**quick** [![Rust](https://example.com/rust.svg \"Logo\")](https://example.com/ci) value",
+                    cx,
+                )
+            })
+        });
         cx.run_until_parked();
 
         state.update(cx, |state, cx| {
@@ -607,7 +614,10 @@ mod tests {
 
         state.read_with(cx, |state, _| {
             assert!(state.has_selection());
-            assert_eq!(state.selected_text().trim(), "quick value");
+            assert_eq!(
+                state.selected_text().trim(),
+                "quick [![Rust](https://example.com/rust.svg \"Logo\")](https://example.com/ci) value"
+            );
         });
 
         state.update(cx, |state, cx| {

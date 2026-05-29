@@ -328,6 +328,20 @@ impl ImageNode {
             .unwrap_or_else(|| self.alt.clone().unwrap_or_default())
             .to_string()
     }
+
+    pub(crate) fn markdown_source(&self) -> String {
+        let alt = self.alt.clone().unwrap_or_default();
+        let title = self
+            .title
+            .clone()
+            .map_or(String::new(), |title| format!(" \"{}\"", title));
+        let image = format!("![{}]({}{})", alt, self.url, title);
+        if let Some(link) = &self.link {
+            format!("[{}]({})", image, link.url)
+        } else {
+            image
+        }
+    }
 }
 
 impl PartialEq for ImageNode {
@@ -475,6 +489,8 @@ impl Paragraph {
         for node in self.children.iter() {
             if node.line_break {
                 text.push('\n');
+            } else if let Some(image) = &node.image {
+                text.push_str(&image.markdown_source());
             } else if let Some(math) = &node.math {
                 text.push_str(math.markdown_source().as_ref());
             } else {
@@ -966,12 +982,7 @@ impl Paragraph {
                     }
 
                     if let Some(image) = &text_node.image {
-                        let alt = image.alt.clone().unwrap_or_default();
-                        let title = image
-                            .title
-                            .clone()
-                            .map_or(String::new(), |t| format!(" \"{}\"", t));
-                        text.push_str(&format!("![{}]({}{})", alt, image.url, title))
+                        text.push_str(&image.markdown_source())
                     }
 
                     (text, link, markdown_style)
@@ -1600,6 +1611,24 @@ mod tests {
                 .map(|highlighter| highlighter.language().clone())
         });
         assert_eq!(cached_language.as_deref(), Some(lang.as_ref()));
+    }
+
+    #[test]
+    fn image_markdown_source_preserves_outer_link() {
+        let image = ImageNode {
+            url: "https://example.com/badge.svg".into(),
+            alt: Some("Build Status".into()),
+            link: Some(LinkMark {
+                url: "https://example.com/ci".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            image.markdown_source(),
+            "[![Build Status](https://example.com/badge.svg)](https://example.com/ci)"
+        );
     }
 
     #[cfg(feature = "markdown-math")]

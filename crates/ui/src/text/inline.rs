@@ -176,6 +176,8 @@ struct ParagraphInlineImage {
     id: usize,
     node: ImageNode,
     size: Size<Pixels>,
+    source_text: SharedString,
+    state: Arc<Mutex<InlineState>>,
 }
 
 pub(super) struct ParagraphInlineLayoutState;
@@ -248,12 +250,12 @@ struct LaidOutInlineText {
 }
 
 #[derive(Clone)]
-struct LaidOutInlineTextSelectionTarget {
+struct LaidOutInlineSelectionTarget {
     bounds: Bounds<Pixels>,
     source_text: SharedString,
-    source_range: Range<usize>,
+    source_range: Option<Range<usize>>,
     state: Arc<Mutex<InlineState>>,
-    line: ShapedLine,
+    line: Option<ShapedLine>,
 }
 
 struct LaidOutInlineMath {
@@ -270,6 +272,8 @@ struct LaidOutInlineImage {
     size: Size<Pixels>,
     element: AnyElement,
     link: Option<LinkMark>,
+    source_text: SharedString,
+    state: Arc<Mutex<InlineState>>,
 }
 
 #[derive(Clone, Copy)]
@@ -439,6 +443,8 @@ impl ParagraphInlineLayout {
                     id: ix,
                     node: image.clone(),
                     size: measure_inline_image(image, None, window, cx),
+                    source_text: image.markdown_source().into(),
+                    state: node.state.clone(),
                 }));
                 continue;
             }
@@ -1111,6 +1117,8 @@ fn push_laid_out_image(
             size,
             element,
             link: image.node.link.clone(),
+            source_text: image.source_text.clone(),
+            state: image.state.clone(),
         }));
     line.width += size.width;
 }
@@ -1390,10 +1398,9 @@ fn paint_paragraph_inline_layout(
         .prefix
         .as_ref()
         .map_or(px(0.), ParagraphInlinePrefix::width);
-    let text_selection_targets =
-        paragraph_inline_text_selection_targets(layout, bounds, prefix_width, options);
-    let multi_click_ranges =
-        paragraph_inline_multi_click_selection_ranges(&text_selection_targets, cx);
+    let selection_targets =
+        paragraph_inline_selection_targets(layout, bounds, prefix_width, options);
+    let multi_click_ranges = paragraph_inline_multi_click_selection_ranges(&selection_targets, cx);
 
     for line in &mut layout.lines {
         let line_offset = paragraph_line_offset(line, bounds.size.width, prefix_width, options);
@@ -1462,11 +1469,26 @@ fn paint_paragraph_inline_layout(
                     }
                 }
                 ParagraphInlineLayoutItem::Image(image) => {
+                    record_text_state(&mut text_states, &image.state, image.source_text.clone());
                     let image_bounds = Bounds {
                         origin: bounds.origin + point(line_offset + image.x, line.y + image.y),
                         size: image.size,
                     };
+                    let selected = selected_range_for_inline_object(
+                        image_bounds,
+                        image.size.width,
+                        window,
+                        cx,
+                        &mut text_states,
+                        &image.state,
+                        image.source_text.len(),
+                        &multi_click_ranges,
+                    )
+                    .is_some();
                     image.element.paint(window, cx);
+                    if selected {
+                        window.paint_quad(fill(image_bounds, cx.theme().selection));
+                    }
                     if let Some(link) = &image.link
                         && image_bounds.contains(&mouse)
                     {
@@ -1512,7 +1534,7 @@ fn paint_paragraph_inline_layout(
         window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
     }
 
-    if text_view_is_selectable(cx) && !text_selection_targets.is_empty() {
+    if text_view_is_selectable(cx) && !selection_targets.is_empty() {
         let current_view = window.current_view();
         let click_hitbox = hitbox.clone();
         let text_view_state = GlobalState::global(cx).text_view_state().cloned();
@@ -1531,7 +1553,7 @@ fn paint_paragraph_inline_layout(
             };
 
             let Some((ranges, selected_text)) =
-                selection_for_multi_click_targets(&text_selection_targets, event.position, kind)
+                selection_for_multi_click_targets(&selection_targets, event.position, kind)
             else {
                 return;
             };
@@ -1644,35 +1666,49 @@ fn paragraph_line_offset(
         }
 }
 
-fn paragraph_inline_text_selection_targets(
+fn paragraph_inline_selection_targets(
     layout: &ParagraphInlineComputed,
     bounds: Bounds<Pixels>,
     prefix_width: Pixels,
     options: NodeRenderOptions,
-) -> Vec<LaidOutInlineTextSelectionTarget> {
+) -> Vec<LaidOutInlineSelectionTarget> {
     let mut targets = Vec::new();
 
     for line in &layout.lines {
         let line_offset = paragraph_line_offset(line, bounds.size.width, prefix_width, options);
         for item in &line.items {
-            let ParagraphInlineLayoutItem::Text(text) = item else {
-                continue;
-            };
-
-            let origin = bounds.origin + point(line_offset + text.x, line.y + text.y);
-            targets.push(LaidOutInlineTextSelectionTarget {
-                bounds: Bounds {
-                    origin,
-                    size: Size {
-                        width: text.line.width(),
-                        height: text.height,
-                    },
-                },
-                source_text: text.source_text.clone(),
-                source_range: text.source_range.clone(),
-                state: text.state.clone(),
-                line: text.line.clone(),
-            });
+            match item {
+                ParagraphInlineLayoutItem::Text(text) => {
+                    let origin = bounds.origin + point(line_offset + text.x, line.y + text.y);
+                    targets.push(LaidOutInlineSelectionTarget {
+                        bounds: Bounds {
+                            origin,
+                            size: Size {
+                                width: text.line.width(),
+                                height: text.height,
+                            },
+                        },
+                        source_text: text.source_text.clone(),
+                        source_range: Some(text.source_range.clone()),
+                        state: text.state.clone(),
+                        line: Some(text.line.clone()),
+                    });
+                }
+                ParagraphInlineLayoutItem::Image(image) => {
+                    let origin = bounds.origin + point(line_offset + image.x, line.y + image.y);
+                    targets.push(LaidOutInlineSelectionTarget {
+                        bounds: Bounds {
+                            origin,
+                            size: image.size,
+                        },
+                        source_text: image.source_text.clone(),
+                        source_range: None,
+                        state: image.state.clone(),
+                        line: None,
+                    });
+                }
+                ParagraphInlineLayoutItem::Math(_) => {}
+            }
         }
     }
 
@@ -1680,7 +1716,7 @@ fn paragraph_inline_text_selection_targets(
 }
 
 fn paragraph_inline_multi_click_selection_ranges(
-    targets: &[LaidOutInlineTextSelectionTarget],
+    targets: &[LaidOutInlineSelectionTarget],
     cx: &mut App,
 ) -> Vec<(Arc<Mutex<InlineState>>, Range<usize>)> {
     let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
@@ -1696,7 +1732,7 @@ fn paragraph_inline_multi_click_selection_ranges(
 }
 
 fn selection_for_multi_click_targets(
-    targets: &[LaidOutInlineTextSelectionTarget],
+    targets: &[LaidOutInlineSelectionTarget],
     pos: Point<Pixels>,
     kind: TextViewMultiClickKind,
 ) -> Option<(Vec<(Arc<Mutex<InlineState>>, Range<usize>)>, String)> {
@@ -1735,7 +1771,7 @@ fn selection_for_multi_click_targets(
 }
 
 fn selection_for_multi_click_target(
-    target: &LaidOutInlineTextSelectionTarget,
+    target: &LaidOutInlineSelectionTarget,
     pos: Point<Pixels>,
     kind: TextViewMultiClickKind,
 ) -> Option<Range<usize>> {
@@ -1745,9 +1781,13 @@ fn selection_for_multi_click_target(
 
     match kind {
         TextViewMultiClickKind::Word => {
+            let Some(source_range) = &target.source_range else {
+                return Some(0..target.source_text.len());
+            };
+            let line = target.line.as_ref()?;
             let x = pos.x - target.bounds.origin.x;
-            let offset = target.line.index_for_x(x)?;
-            word_range_at(&target.source_text, target.source_range.start + offset)
+            let offset = line.index_for_x(x)?;
+            word_range_at(&target.source_text, source_range.start + offset)
         }
         TextViewMultiClickKind::Paragraph => {
             (!target.source_text.is_empty()).then_some(0..target.source_text.len())
@@ -1849,6 +1889,74 @@ fn selected_ranges_for_text(
     record_selected_ranges_for_text(text, states, &selected_ranges);
 
     selected_ranges
+}
+
+fn selected_range_for_inline_object(
+    bounds: Bounds<Pixels>,
+    width: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+    states: &mut Vec<(Arc<Mutex<InlineState>>, SharedString, Option<Range<usize>>)>,
+    state: &Arc<Mutex<InlineState>>,
+    len: usize,
+    multi_click_ranges: &[(Arc<Mutex<InlineState>>, Range<usize>)],
+) -> Option<Range<usize>> {
+    if len == 0 {
+        return None;
+    }
+
+    let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
+        return None;
+    };
+    let text_view_state = text_view_state.read(cx);
+    if !text_view_state.has_selection() || !text_view_state.is_selectable() {
+        return None;
+    }
+
+    if let Some((_, range)) = multi_click_ranges
+        .iter()
+        .find(|(selected_state, _)| Arc::ptr_eq(selected_state, state))
+    {
+        record_selected_range_for_state(states, state, range.clone());
+        return Some(range.clone());
+    }
+
+    let selected = if text_view_state.is_all_selected() {
+        true
+    } else if text_view_state.multi_click_selection().is_some() {
+        false
+    } else if let Some((selection_start, selection_end)) = text_view_state.selection_points() {
+        point_in_inline_selection(
+            bounds.origin,
+            width.max(window.line_height().half()),
+            selection_start,
+            selection_end,
+            bounds.size.height,
+        )
+    } else {
+        false
+    };
+
+    if !selected {
+        return None;
+    }
+
+    let range = 0..len;
+    record_selected_range_for_state(states, state, range.clone());
+    Some(range)
+}
+
+fn record_selected_range_for_state(
+    states: &mut Vec<(Arc<Mutex<InlineState>>, SharedString, Option<Range<usize>>)>,
+    state: &Arc<Mutex<InlineState>>,
+    range: Range<usize>,
+) {
+    if let Some((_, _, selection)) = states
+        .iter_mut()
+        .find(|(existing, _, _)| Arc::ptr_eq(existing, state))
+    {
+        *selection = Some(range);
+    }
 }
 
 fn record_selected_ranges_for_text(
