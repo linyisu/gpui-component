@@ -1081,7 +1081,7 @@ impl BlockNode {
                     .map(|row| {
                         row.children
                             .iter()
-                            .map(|cell| cell.children.to_markdown())
+                            .map(|cell| cell.children.to_markdown().trim_end_matches('\n').to_string())
                             .collect::<Vec<_>>()
                             .join(" | ")
                     })
@@ -1106,7 +1106,7 @@ impl BlockNode {
                     .map(|row| {
                         row.children
                             .iter()
-                            .map(|cell| cell.children.to_markdown())
+                            .map(|cell| cell.children.to_markdown().trim_end_matches('\n').to_string())
                             .collect::<Vec<_>>()
                             .join(" | ")
                     })

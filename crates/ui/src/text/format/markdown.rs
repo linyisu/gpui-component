@@ -55,6 +55,7 @@ struct MarkdownParseContext<'a> {
     source: &'a str,
     node_cx: &'a mut NodeContext,
     highlight_theme: &'a HighlightTheme,
+    in_table_cell: bool,
 }
 
 impl<'a> MarkdownParseContext<'a> {
@@ -67,6 +68,7 @@ impl<'a> MarkdownParseContext<'a> {
             source,
             node_cx,
             highlight_theme,
+            in_table_cell: false,
         }
     }
 
@@ -104,9 +106,12 @@ fn parse_table_cell(
     ctx: &mut MarkdownParseContext<'_>,
 ) {
     let mut paragraph = Paragraph::default();
+    let was_in_table_cell = ctx.in_table_cell;
+    ctx.in_table_cell = true;
     node.children.iter().for_each(|c| {
         parse_paragraph(&mut paragraph, c, ctx);
     });
+    ctx.in_table_cell = was_in_table_cell;
     let table_cell = node::TableCell {
         children: paragraph,
         ..Default::default()
@@ -386,8 +391,9 @@ fn parse_inline_math(
 ) -> String {
     let mut text = raw.value.clone();
     let raw_source = ctx.inline_math_source(raw);
-    let display = raw_source.map(|s| s.starts_with("$$")).unwrap_or(false);
-    let math_source = if display {
+    let raw_display = raw_source.map(|s| s.starts_with("$$")).unwrap_or(false);
+    let display = raw_display && !ctx.in_table_cell;
+    let math_source = if raw_display {
         raw_source
             .and_then(|s| s.strip_prefix("$$")?.strip_suffix("$$"))
             .map(str::trim)
@@ -398,7 +404,7 @@ fn parse_inline_math(
 
     match MathNode::try_new(math_source, display) {
         Ok(math) => {
-            let math = if display && let Some(source) = raw_source {
+            let math = if raw_display && let Some(source) = raw_source {
                 math.with_markdown_source(source)
             } else {
                 math
@@ -883,6 +889,38 @@ mod tests {
                 .map(|math| math.is_display())
                 == Some(true)),
             "double-dollar math in a paragraph should round-trip as display math"
+        );
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn test_double_dollar_math_in_table_cell_renders_inline() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "| Name | Formula |\n|---|---|\n| Inline | $$x^2+y^2=z^2$$ |",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::Table(table) = &document.blocks[0] else {
+            panic!("expected table");
+        };
+        let math = table.children[1].children[1]
+            .children
+            .children
+            .iter()
+            .find_map(|child| child.math.as_ref())
+            .expect("expected table cell math");
+
+        assert!(
+            !math.is_display(),
+            "double-dollar math in a table cell should render inline"
+        );
+        assert_eq!(math.markdown_source().as_ref(), "$$x^2+y^2=z^2$$");
+        assert_eq!(
+            document.to_markdown(),
+            "Name | Formula\n:-- | :--\nInline | $$x^2+y^2=z^2$$"
         );
     }
 
