@@ -2105,7 +2105,7 @@ mod layout_tests {
         text::{
             document::{ListItemPrefix, NodeRenderOptions},
             format::markdown::parse,
-            node::{BlockNode, NodeContext, Paragraph},
+            node::{BlockNode, ImageNode, NodeContext, Paragraph},
         },
     };
 
@@ -2246,6 +2246,141 @@ mod layout_tests {
             );
             assert_layout(&list_layout);
         });
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[gpui::test]
+    fn inline_objects_from_markdown_wrap_without_overlapping(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (_, cx) = cx.add_window_view(|_, _| LayoutTestRoot);
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let long_word_layout = paragraph_layout_from_markdown_for_test(
+                "$Afasfasffafasfas$TESTTESTTESTTESTTESTTESTTESTTESTTEST",
+                px(120.),
+                window,
+                cx,
+            );
+            assert!(matches!(
+                long_word_layout.lines[0].items.as_slice(),
+                [ParagraphInlineLayoutItem::Math(_)]
+            ));
+            assert!(matches!(
+                long_word_layout.lines[1].items.as_slice(),
+                [ParagraphInlineLayoutItem::Text(_)]
+            ));
+
+            let cjk_layout = paragraph_layout_from_markdown_for_test(
+                concat!(
+                    "每个测试用例包含一行，有三个整数 $n, a, b$",
+                    "（$1 \\le n, a, b \\le 10^8$）——学生人数、个人密钥的价格和团体密钥的价格。",
+                ),
+                px(260.),
+                window,
+                cx,
+            );
+            assert!(
+                cjk_layout.lines.len() > 1,
+                "CJK punctuation around inline math should be able to wrap"
+            );
+            assert!(cjk_layout.lines.iter().all(|line| line.width <= px(260.)));
+
+            let mut image_items = vec![super::ParagraphInlineItem::Image(
+                super::ParagraphInlineImage {
+                    id: 0,
+                    node: ImageNode {
+                        url: "https://example.com/badge.svg".into(),
+                        alt: Some("Build Status".into()),
+                        ..Default::default()
+                    },
+                    size: gpui::Size {
+                        width: px(72.),
+                        height: px(20.),
+                    },
+                    source_text: "![Build Status](https://example.com/badge.svg)".into(),
+                    state: Arc::new(Mutex::new(InlineState::default())),
+                },
+            )];
+            image_items.extend(paragraph_inline_highlighted_text_items(
+                " text after image.".into(),
+                Arc::new(Mutex::new(InlineState::default())),
+                vec![],
+            ));
+            let image_layout = compute_paragraph_inline_layout(
+                &image_items,
+                Some(px(80.)),
+                None,
+                &window.text_style(),
+                window,
+                cx,
+            );
+            assert!(image_layout.lines.len() > 1);
+            assert!(image_layout.lines.iter().any(|line| {
+                line.items
+                    .iter()
+                    .any(|item| matches!(item, ParagraphInlineLayoutItem::Image(_)))
+            }));
+        });
+    }
+
+    #[test]
+    fn inline_image_metrics_keep_image_inside_line_bounds() {
+        let default_metrics = super::InlineItemMetrics {
+            ascent: px(12.),
+            descent: px(4.),
+        };
+        let image = super::ParagraphInlineImage {
+            id: 0,
+            node: crate::text::node::ImageNode {
+                url: "https://example.com/badge.svg".into(),
+                alt: Some("Build Status".into()),
+                ..Default::default()
+            },
+            size: gpui::Size {
+                width: px(72.),
+                height: px(24.),
+            },
+            source_text: "![Build Status](https://example.com/badge.svg)".into(),
+            state: Arc::new(Mutex::new(InlineState::default())),
+        };
+        let mut line = super::ParagraphInlineLine {
+            y: px(0.),
+            ascent: default_metrics.ascent,
+            descent: default_metrics.descent,
+            width: px(0.),
+            align: super::ParagraphLineAlign::Column,
+            items: vec![],
+        };
+
+        let (size, metrics) = super::layout_inline_image(image.size, px(200.), default_metrics);
+        super::push_laid_out_image(&mut line, &image, size, metrics);
+
+        let super::ParagraphInlineLayoutItem::Image(image) = &line.items[0] else {
+            panic!("expected inline image item");
+        };
+        assert_eq!(image.y, px(0.));
+        assert_eq!(
+            image.y + image.size.height,
+            super::paragraph_inline_line_height(&line)
+        );
+    }
+
+    #[cfg(feature = "markdown-math")]
+    fn paragraph_layout_from_markdown_for_test(
+        source: &str,
+        width: gpui::Pixels,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> super::ParagraphInlineComputed {
+        let mut node_cx = NodeContext::default();
+        let document = parse(source, &mut node_cx, &HighlightTheme::default_light()).unwrap();
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        let items = paragraph_inline_items_for_test(paragraph, None, node_cx, window, cx);
+        compute_paragraph_inline_layout(&items, Some(width), None, &window.text_style(), window, cx)
     }
 
     #[cfg(feature = "markdown-math")]

@@ -80,9 +80,9 @@ impl ParsedDocument {
         text
     }
 
-    /// Converts the node to markdown format.
+    /// Converts the document back to markdown-like source.
     ///
-    /// This is used to generate markdown for test.
+    /// This preserves markdown source for round-trip checks and copied content.
     #[allow(dead_code)]
     pub(crate) fn to_markdown(&self) -> String {
         self.blocks

@@ -440,6 +440,77 @@ mod tests {
     }
 
     #[gpui::test]
+    fn markdown_text_link_opens(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx
+            .add_window_view(|_, cx| TextViewTestRoot::new("[link](https://example.com/text)", cx));
+        let cx: &mut VisualTestContext = cx;
+
+        cx.simulate_click(point(px(10.), px(16.)), Modifiers::default());
+
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/text"));
+    }
+
+    #[gpui::test]
+    fn linked_inline_image_opens(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            TextViewTestRoot::new(
+                "[![B](https://example.com/b.svg)](https://example.com/image)",
+                cx,
+            )
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.simulate_click(point(px(5.), px(16.)), Modifiers::default());
+
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://example.com/image")
+        );
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[gpui::test]
+    fn linked_inline_math_opens(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            TextViewTestRoot::new("[$x^2$](https://example.com/math)", cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.simulate_click(point(px(5.), px(16.)), Modifiers::default());
+
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/math"));
+    }
+
+    #[gpui::test]
+    fn dragging_over_markdown_link_does_not_open(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx
+            .add_window_view(|_, cx| TextViewTestRoot::new("[link](https://example.com/text)", cx));
+        let cx: &mut VisualTestContext = cx;
+
+        cx.simulate_mouse_down(
+            point(px(0.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(40.), px(16.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(40.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+
+        assert_eq!(cx.opened_url(), None);
+    }
+
+    #[gpui::test]
     fn clipped_markdown_cannot_start_selection(cx: &mut TestAppContext) {
         cx.update(crate::init);
         let (view, cx) = cx
@@ -508,6 +579,40 @@ mod tests {
             selected_text.trim(),
             "A [![B](https://example.com/b.svg)](https://example.com/ci) C"
         );
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[gpui::test]
+    fn selected_inline_math_copies_markdown_source(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("A $x^2$ C", cx));
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        cx.simulate_mouse_down(
+            point(px(0.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(90.), px(16.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(90.), px(16.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(selected_text.trim(), "A $x^2$ C");
     }
 
     #[gpui::test]

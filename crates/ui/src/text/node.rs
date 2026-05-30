@@ -74,7 +74,7 @@ pub(crate) enum BlockNode {
     HorizontalRule {
         span: Option<Span>,
     },
-    /// Use for to_markdown get raw definition
+    /// Link reference definition retained for markdown serialization.
     Definition {
         identifier: SharedString,
         url: SharedString,
@@ -1045,9 +1045,9 @@ fn indent_markdown_continuation_lines(markdown: &str, indent: &str) -> String {
 }
 
 impl BlockNode {
-    /// Converts the node to markdown format.
+    /// Converts the node back to markdown-like source.
     ///
-    /// This is used to generate markdown for test.
+    /// This preserves markdown source for round-trip checks and copied content.
     #[allow(dead_code)]
     pub(crate) fn to_markdown(&self) -> String {
         match self {
