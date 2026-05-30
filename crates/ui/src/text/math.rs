@@ -209,11 +209,10 @@ mod real {
 
         fn layout_for(&self, window: &Window) -> (MathLayout, super::MathMetrics) {
             let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-            if self.node.display_list.is_none() {
+            let Some(display_list) = self.node.display_list.as_ref() else {
                 return self.fallback_layout_for(font_size, window);
-            }
+            };
 
-            let display_list = self.node.display_list.as_ref().unwrap();
             let em = if self.node.display {
                 font_size * 1.1
             } else {
