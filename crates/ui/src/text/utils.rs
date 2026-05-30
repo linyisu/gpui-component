@@ -41,34 +41,45 @@ pub(crate) fn normalize_runs_for_text(text: &str, runs: Vec<TextRun>) -> Vec<Tex
         return vec![];
     }
 
-    let mut normalized = Vec::with_capacity(runs.len());
-    let mut offset = 0;
+    let mut retained_runs = Vec::with_capacity(runs.len());
+    let mut boundaries = Vec::with_capacity(runs.len() + 1);
+    let mut original_offset = 0;
+    boundaries.push(0);
 
     for run in runs {
-        if offset >= text.len() {
+        if original_offset >= text.len() {
             break;
         }
 
-        let mut end = offset.saturating_add(run.len).min(text.len());
+        original_offset = original_offset.saturating_add(run.len).min(text.len());
+        let mut end = original_offset;
         while end < text.len() && !text.is_char_boundary(end) {
             end += 1;
         }
 
-        if end <= offset {
-            continue;
-        }
-
-        normalized.push(TextRun {
-            len: end - offset,
-            ..run
-        });
-        offset = end;
+        let previous = boundaries.last().copied().unwrap_or_default();
+        boundaries.push(end.max(previous));
+        retained_runs.push(run);
     }
 
-    if offset < text.len() {
-        if let Some(last_run) = normalized.last_mut() {
-            last_run.len += text.len() - offset;
+    if let Some(last) = boundaries.last_mut()
+        && *last < text.len()
+    {
+        *last = text.len();
+    }
+
+    let mut normalized = Vec::with_capacity(retained_runs.len());
+    for (run, boundary) in retained_runs.into_iter().zip(boundaries.windows(2)) {
+        let [start, end] = boundary else {
+            continue;
+        };
+        if end <= start {
+            continue;
         }
+        normalized.push(TextRun {
+            len: end - start,
+            ..run
+        });
     }
 
     normalized
@@ -134,5 +145,54 @@ mod tests {
         }
 
         assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
+    }
+
+    #[test]
+    fn test_normalize_runs_for_text_preserves_later_style_boundaries() {
+        let run = TextRun {
+            len: 0,
+            font: gpui::font(".SystemUIFont"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let text = "a\u{4E2D}b\u{6587}c";
+
+        let runs = normalize_runs_for_text(
+            text,
+            vec![
+                TextRun {
+                    len: 2,
+                    color: gpui::red(),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: 3,
+                    color: gpui::blue(),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: 4,
+                    color: gpui::green(),
+                    ..run
+                },
+            ],
+        );
+
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            vec!["a\u{4E2D}".len(), "b".len(), "\u{6587}c".len(),]
+        );
+        assert_eq!(runs[0].color, gpui::red());
+        assert_eq!(runs[1].color, gpui::blue());
+        assert_eq!(runs[2].color, gpui::green());
+
+        let mut offset = 0;
+        for run in &runs {
+            offset += run.len;
+            assert!(text.is_char_boundary(offset));
+        }
+        assert_eq!(offset, text.len());
     }
 }

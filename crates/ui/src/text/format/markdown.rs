@@ -960,6 +960,49 @@ mod tests {
 
     #[cfg(feature = "markdown-math")]
     #[test]
+    fn test_unescaped_dollar_amounts_follow_math_dialect() {
+        let mut cx = NodeContext::default();
+        let source = "Price is $5 and $10 today.";
+        let document = parse(source, &mut cx, &HighlightTheme::default_light()).unwrap();
+
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+
+        assert_eq!(paragraph.children.len(), 3);
+        assert_eq!(paragraph.children[0].text.as_ref(), "Price is ");
+        assert_eq!(
+            paragraph.children[1]
+                .math
+                .as_ref()
+                .map(|math| math.source().as_ref()),
+            Some("5 and ")
+        );
+        assert_eq!(paragraph.children[2].text.as_ref(), "10 today.");
+        assert_eq!(document.to_markdown(), source);
+    }
+
+    #[cfg(not(feature = "markdown-math"))]
+    #[test]
+    fn test_dollar_math_source_stays_text_when_math_feature_disabled() {
+        let mut cx = NodeContext::default();
+        let source = "$x$ and $$y^2$$";
+        let document = parse(source, &mut cx, &HighlightTheme::default_light()).unwrap();
+
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+
+        assert!(
+            paragraph.children.iter().all(|child| child.math.is_none()),
+            "math delimiters should stay plain text when markdown-math is disabled"
+        );
+        assert_eq!(paragraph.text(), source);
+        assert_eq!(document.to_markdown(), source);
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[test]
     fn test_linked_inline_math_keeps_link_mark() {
         let mut cx = NodeContext::default();
         let document = parse(

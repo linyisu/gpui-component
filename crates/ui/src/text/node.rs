@@ -426,8 +426,6 @@ pub(crate) struct Paragraph {
     ///
     /// The key is the identifier, the value is the url.
     pub(super) link_refs: HashMap<SharedString, SharedString>,
-
-    pub(crate) state: Arc<Mutex<InlineState>>,
 }
 
 impl PartialEq for Paragraph {
@@ -444,7 +442,6 @@ impl Paragraph {
             span: None,
             children: vec![],
             link_refs: HashMap::new(),
-            state: Arc::new(Mutex::new(InlineState::default())),
         };
         paragraph.push_str(&text);
         paragraph
@@ -452,32 +449,57 @@ impl Paragraph {
 
     pub(super) fn selected_text(&self) -> String {
         let mut text = String::new();
-        let mut pending_line_break = false;
+        let mut pending_line_breaks = 0;
+        let mut saw_selected_text = false;
+        let mut saw_non_break_content_since_last_output = false;
 
         for c in self.children.iter() {
             let mut selected = String::new();
+            let mut selected_starts_at_zero = false;
 
             if let Ok(state) = c.state.lock() {
                 if let Some(selection) = &state.selection {
                     let part_text = state.text.clone();
                     selected.push_str(&part_text[selection.start..selection.end]);
+                    selected_starts_at_zero = selection.start == 0;
                 }
             }
 
             if let Some(math) = &c.math {
                 selected.push_str(&math.selected_text());
+                selected_starts_at_zero = true;
             }
 
             if !selected.is_empty() {
-                if pending_line_break {
-                    text.push('\n');
-                    pending_line_break = false;
+                if pending_line_breaks > 0 {
+                    if saw_selected_text
+                        || (!saw_non_break_content_since_last_output && selected_starts_at_zero)
+                    {
+                        for _ in 0..pending_line_breaks {
+                            text.push('\n');
+                        }
+                    }
+                    pending_line_breaks = 0;
                 }
                 text.push_str(&selected);
+                saw_selected_text = true;
+                saw_non_break_content_since_last_output = false;
+                continue;
             }
 
-            if c.line_break && !text.is_empty() {
-                pending_line_break = true;
+            if c.line_break {
+                pending_line_breaks += 1;
+            } else {
+                if pending_line_breaks > 0 {
+                    pending_line_breaks = 0;
+                }
+                saw_non_break_content_since_last_output = true;
+            }
+        }
+
+        if !text.is_empty() && pending_line_breaks > 0 {
+            for _ in 0..pending_line_breaks {
+                text.push('\n');
             }
         }
 
@@ -552,7 +574,6 @@ impl Paragraph {
                 span: None,
                 children: vec![],
                 link_refs: Default::default(),
-                state: Arc::new(Mutex::new(InlineState::default())),
             },
         )
     }
@@ -1701,16 +1722,12 @@ mod tests {
         let mut paragraph = Paragraph::default();
         paragraph.push_str("before ");
         paragraph.push(InlineNode::math(math));
-
-        let math_ix = paragraph
-            .children
-            .iter()
-            .position(|child| child.math.is_some())
-            .unwrap();
-        let mut state = paragraph.children[math_ix].state.lock().unwrap();
-        state.set_text("before ".into());
-        state.selection = Some((0.."before ".len()).into());
-        drop(state);
+        paragraph.children[0]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("before ".into());
+        paragraph.children[0].state.lock().unwrap().selection = Some((0.."before ".len()).into());
 
         assert_eq!(paragraph.selected_text(), "before $x^2$");
     }
@@ -1727,12 +1744,17 @@ mod tests {
         paragraph.push(InlineNode::line_break());
         paragraph.push_str("after");
 
-        paragraph.children[1]
+        paragraph.children[0]
             .state
             .lock()
             .unwrap()
             .set_text("before".into());
-        paragraph.children[1].state.lock().unwrap().selection = Some((0.."before".len()).into());
+        paragraph.children[0].state.lock().unwrap().selection = Some((0.."before".len()).into());
+        paragraph.children[1]
+            .math
+            .as_ref()
+            .unwrap()
+            .select_all_for_test();
 
         paragraph.children[2]
             .state
@@ -1750,6 +1772,78 @@ mod tests {
         assert_eq!(paragraph.selected_text(), "before$x^2$\nafter");
     }
 
+    #[test]
+    fn test_selected_text_preserves_consecutive_line_breaks_and_trailing_breaks() {
+        let mut paragraph = Paragraph::default();
+        paragraph.push_str("before");
+        paragraph.push(InlineNode::line_break());
+        paragraph.push(InlineNode::line_break());
+        paragraph.push_str("after");
+
+        paragraph.children[0]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("before".into());
+        paragraph.children[0].state.lock().unwrap().selection = Some((0.."before".len()).into());
+
+        paragraph.children[3]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("after".into());
+        paragraph.children[3].state.lock().unwrap().selection = Some((0.."after".len()).into());
+
+        assert_eq!(paragraph.selected_text(), "before\n\nafter");
+
+        let mut trailing = Paragraph::default();
+        trailing.push_str("foo");
+        trailing.push(InlineNode::line_break());
+        trailing.children[0]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("foo".into());
+        trailing.children[0].state.lock().unwrap().selection = Some((0.."foo".len()).into());
+
+        assert_eq!(trailing.selected_text(), "foo\n");
+
+        let mut leading = Paragraph::default();
+        leading.push(InlineNode::line_break());
+        leading.push_str("a");
+        leading.children[1]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("a".into());
+        leading.children[1].state.lock().unwrap().selection = Some((0.."a".len()).into());
+
+        assert_eq!(leading.selected_text(), "\na");
+    }
+
+    #[test]
+    fn test_selected_text_does_not_copy_break_before_unselected_content() {
+        let mut paragraph = Paragraph::default();
+        paragraph.push_str("a");
+        paragraph.push(InlineNode::line_break());
+        paragraph.push_str("b");
+
+        paragraph.children[0]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("a".into());
+        paragraph.children[0].state.lock().unwrap().selection = Some((0..1).into());
+
+        paragraph.children[2]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("b".into());
+
+        assert_eq!(paragraph.selected_text(), "a");
+    }
+
     #[cfg(feature = "markdown-math")]
     #[test]
     fn test_selected_text_preserves_text_around_inline_math() {
@@ -1765,15 +1859,13 @@ mod tests {
             .state
             .lock()
             .unwrap()
-            .set_text("text".into());
-        paragraph.children[0].state.lock().unwrap().selection = Some((0.."text".len()).into());
-
+            .set_text("text（".into());
+        paragraph.children[0].state.lock().unwrap().selection = Some((0.."text（".len()).into());
         paragraph.children[1]
-            .state
-            .lock()
+            .math
+            .as_ref()
             .unwrap()
-            .set_text("（".into());
-        paragraph.children[1].state.lock().unwrap().selection = Some((0.."（".len()).into());
+            .select_all_for_test();
 
         paragraph.children[2]
             .state

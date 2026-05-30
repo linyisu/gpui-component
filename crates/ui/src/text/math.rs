@@ -611,9 +611,9 @@ mod real {
         em: Pixels,
         color: Hsla,
         window: &mut Window,
-    ) {
+    ) -> bool {
         if commands.is_empty() {
-            return;
+            return false;
         }
 
         let mut builder = if is_fill {
@@ -658,11 +658,15 @@ mod real {
         }
 
         match builder.build() {
-            Ok(path) => window.paint_path(path, color),
+            Ok(path) => {
+                window.paint_path(path, color);
+                true
+            }
             Err(err) if cfg!(debug_assertions) => {
                 tracing::warn!("failed building math path: {err:?}");
+                false
             }
-            Err(_) => {}
+            Err(_) => false,
         }
     }
 
@@ -701,8 +705,9 @@ mod real {
             return;
         };
         if require_katex_font && !resolved_font_matches(window, run.font_id, &font) {
-            paint_ttf_glyph_path(origin, em, font_id, ch, color, window);
-            return;
+            if paint_ttf_glyph_path(origin, em, font_id, ch, color, window) {
+                return;
+            }
         };
         let Some(glyph) = run.glyphs.first() else {
             return;
@@ -729,9 +734,14 @@ mod real {
         ch: char,
         color: Hsla,
         window: &mut Window,
-    ) {
+    ) -> bool {
         if let Some(commands) = katex_ttf_outline_commands(font_id, ch) {
-            paint_path_segment(origin, &commands, true, em, color, window);
+            paint_path_segment(origin, &commands, true, em, color, window)
+        } else {
+            if cfg!(debug_assertions) {
+                tracing::debug!("missing KaTeX TTF outline for {font_id:?} glyph {ch:?}");
+            }
+            false
         }
     }
 

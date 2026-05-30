@@ -2444,6 +2444,59 @@ mod tests {
     }
 
     #[test]
+    fn test_runs_for_range_normalization_preserves_later_style_boundaries() {
+        let run = TextRun {
+            len: 0,
+            font: gpui::font(".SystemUIFont"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let text = "xxa\u{4E2D}b\u{6587}c";
+        let line_text = "a\u{4E2D}b\u{6587}c";
+
+        let source_runs = vec![
+            TextRun {
+                len: 2,
+                ..run.clone()
+            },
+            TextRun {
+                len: 2,
+                color: gpui::red(),
+                ..run.clone()
+            },
+            TextRun {
+                len: 3,
+                color: gpui::blue(),
+                ..run.clone()
+            },
+            TextRun {
+                len: 4,
+                color: gpui::green(),
+                ..run
+            },
+        ];
+        let line_runs = runs_for_range(&source_runs, 0, &(2..text.len()));
+        let runs = normalize_runs_for_text(line_text, line_runs);
+
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            vec!["a\u{4E2D}".len(), "b".len(), "\u{6587}c".len(),]
+        );
+        assert_eq!(runs[0].color, gpui::red());
+        assert_eq!(runs[1].color, gpui::blue());
+        assert_eq!(runs[2].color, gpui::green());
+
+        let mut offset = 0;
+        for run in &runs {
+            offset += run.len;
+            assert!(line_text.is_char_boundary(offset));
+        }
+        assert_eq!(offset, line_text.len());
+    }
+
+    #[test]
     fn test_placeholder_line_runs() {
         let run = TextRun {
             len: 0,

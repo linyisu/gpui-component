@@ -1148,13 +1148,9 @@ fn inline_image_element(image: &ImageNode, id: usize, size: Size<Pixels>) -> Any
         .object_fit(ObjectFit::Contain)
         .w(size.width)
         .h(size.height)
-        .when_some(link, |this, link| {
+        .when_some(link, |this, _| {
             this.cursor_pointer()
                 .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    cx.open_url(&link.url);
-                })
         })
         .into_any_element()
 }
@@ -2095,16 +2091,29 @@ mod inline_selection_tests {
 mod layout_tests {
     use std::sync::{Arc, Mutex};
 
+    #[cfg(feature = "markdown-math")]
+    use gpui::ElementId;
     use gpui::{
         Context, IntoElement, Render, SharedString, Styled as _, TestAppContext, VisualTestContext,
         Window, div, px,
     };
 
     use crate::init;
+    #[cfg(feature = "markdown-math")]
+    use crate::{
+        highlighter::HighlightTheme,
+        text::{
+            document::{ListItemPrefix, NodeRenderOptions},
+            format::markdown::parse,
+            node::{BlockNode, NodeContext, Paragraph},
+        },
+    };
 
     use super::{
         InlineState, compute_paragraph_inline_layout, paragraph_inline_highlighted_text_items,
     };
+    #[cfg(feature = "markdown-math")]
+    use super::{ParagraphInlineLayout, ParagraphInlineLayoutItem, ParagraphLineAlign};
 
     struct LayoutTestRoot;
 
@@ -2146,5 +2155,116 @@ mod layout_tests {
             ));
             assert_eq!(layout.lines[1].y, line_height);
         });
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[gpui::test]
+    fn display_math_from_markdown_occupies_its_own_layout_line(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (_, cx) = cx.add_window_view(|_, _| LayoutTestRoot);
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let assert_layout = |layout: &super::ParagraphInlineComputed| {
+                assert_eq!(layout.lines.len(), 3);
+                assert!(matches!(
+                    layout.lines[0].items.as_slice(),
+                    [ParagraphInlineLayoutItem::Text(_)]
+                ));
+                assert!(matches!(
+                    layout.lines[1].items.as_slice(),
+                    [ParagraphInlineLayoutItem::Math(_)]
+                ));
+                assert!(matches!(layout.lines[1].align, ParagraphLineAlign::Center));
+                assert!(matches!(
+                    layout.lines[2].items.as_slice(),
+                    [ParagraphInlineLayoutItem::Text(_)]
+                ));
+            };
+
+            let mut node_cx = NodeContext::default();
+            let document = parse(
+                "before $$x^2$$ after",
+                &mut node_cx,
+                &HighlightTheme::default_light(),
+            )
+            .unwrap();
+            assert_eq!(document.to_markdown(), "before $$x^2$$ after");
+            let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+                panic!("expected paragraph");
+            };
+            let paragraph_items =
+                paragraph_inline_items_for_test(paragraph, None, node_cx.clone(), window, cx);
+            let paragraph_layout = compute_paragraph_inline_layout(
+                &paragraph_items,
+                Some(px(240.)),
+                None,
+                &window.text_style(),
+                window,
+                cx,
+            );
+            assert_layout(&paragraph_layout);
+
+            let list_prefix = ListItemPrefix::Marker {
+                ix: 0,
+                ordered: false,
+                depth: 0,
+                visible: true,
+            };
+            let mut node_cx = NodeContext::default();
+            let document = parse(
+                "- before $$x^2$$ after",
+                &mut node_cx,
+                &HighlightTheme::default_light(),
+            )
+            .unwrap();
+            assert_eq!(document.to_markdown(), "- before $$x^2$$ after");
+            let BlockNode::List { children, .. } = &document.blocks[0] else {
+                panic!("expected list");
+            };
+            let BlockNode::ListItem { children, .. } = &children[0] else {
+                panic!("expected list item");
+            };
+            let BlockNode::Paragraph(paragraph) = &children[0] else {
+                panic!("expected list item paragraph");
+            };
+            let list_items = paragraph_inline_items_for_test(
+                paragraph,
+                Some(list_prefix),
+                node_cx.clone(),
+                window,
+                cx,
+            );
+            let list_layout = compute_paragraph_inline_layout(
+                &list_items,
+                Some(px(240.)),
+                Some(list_prefix),
+                &window.text_style(),
+                window,
+                cx,
+            );
+            assert_layout(&list_layout);
+        });
+    }
+
+    #[cfg(feature = "markdown-math")]
+    fn paragraph_inline_items_for_test(
+        paragraph: &Paragraph,
+        list_prefix: Option<ListItemPrefix>,
+        node_cx: NodeContext,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Vec<super::ParagraphInlineItem> {
+        ParagraphInlineLayout::new(
+            ElementId::Name("paragraph-inline-layout-test".into()),
+            paragraph.children.clone(),
+            node_cx,
+            NodeRenderOptions {
+                list_prefix,
+                ..Default::default()
+            },
+        )
+        .items(window, cx)
     }
 }
