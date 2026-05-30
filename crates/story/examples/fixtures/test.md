@@ -361,7 +361,7 @@ $$
 > \int_0^1 x^2\,dx=\frac13
 > $$
 
-| Name | Left aligned formula | Center aligned formula | Right aligned formula |
+| Case | Left aligned formula | Center aligned formula | Right aligned formula |
 |---|:---|:---:|---:|
 | Short identity | $e^{i\pi}+1=0$ | $e^{i\pi}+1=0$ | $e^{i\pi}+1=0$ |
 | Longer expression | $P(A\mid B)=\frac{P(B\mid A)P(A)}{P(B)}$ | $P(A\mid B)=\frac{P(B\mid A)P(A)}{P(B)}$ | $P(A\mid B)=\frac{P(B\mid A)P(A)}{P(B)}$ |
