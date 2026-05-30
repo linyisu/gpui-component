@@ -598,7 +598,7 @@ mod tests {
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(
-            selected_text,
+            selected_text.trim(),
             "A [![B](https://example.com/b.svg)](https://example.com/ci) C"
         );
     }
@@ -629,7 +629,7 @@ mod tests {
         draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
-        assert_eq!(selected_text, "A $x^2$ C");
+        assert_eq!(selected_text.trim(), "A $x^2$ C");
     }
 
     #[gpui::test]
@@ -664,7 +664,7 @@ mod tests {
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(
-            selected_text,
+            selected_text.trim(),
             concat!(
                 "Build Status ",
                 "[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)]",

@@ -339,7 +339,7 @@ impl TextViewState {
     }
 
     pub(super) fn on_action_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        let selected_text = self.selected_text();
+        let selected_text = self.selected_text().trim().to_string();
         if selected_text.is_empty() {
             return;
         }
