@@ -1800,15 +1800,11 @@ fn selection_for_multi_click_targets(
                     continue;
                 }
 
-                if target.source_text.is_empty() {
-                    continue;
-                }
-
                 ranges.push((target.state.clone(), 0..target.source_text.len()));
             }
 
             let selected_text = source_text.to_string();
-            (!selected_text.is_empty()).then_some((ranges, selected_text))
+            (!ranges.is_empty()).then_some((ranges, selected_text))
         }
     }
 }
@@ -1832,9 +1828,7 @@ fn selection_for_multi_click_target(
             let offset = line.index_for_x(x)?;
             word_range_at(&target.source_text, source_range.start + offset)
         }
-        TextViewMultiClickKind::Paragraph => {
-            (!target.source_text.is_empty()).then_some(0..target.source_text.len())
-        }
+        TextViewMultiClickKind::Paragraph => Some(0..target.source_text.len()),
     }
 }
 
@@ -1943,10 +1937,6 @@ fn selected_range_for_inline_object(
     len: usize,
     multi_click_ranges: &[(Arc<Mutex<InlineState>>, Range<usize>)],
 ) -> Option<Range<usize>> {
-    if len == 0 {
-        return None;
-    }
-
     let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
         return None;
     };

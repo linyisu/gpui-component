@@ -600,6 +600,24 @@ mod tests {
         assert_eq!(selected_text.trim(), "A B C");
     }
 
+    #[gpui::test]
+    fn selected_inline_image_without_alt_has_selection_feedback(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            TextViewTestRoot::new("![](https://example.com/badge.svg)", cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+        draw_once(cx);
+
+        simulate_multi_click(cx, point(px(5.), px(16.)), 2);
+        draw_once(cx);
+
+        let has_selection = view.read_with(cx, |root, cx| root.text_view.read(cx).has_selection());
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert!(has_selection);
+        assert!(selected_text.is_empty());
+    }
+
     #[cfg(feature = "markdown-math")]
     #[gpui::test]
     fn selected_inline_math_copies_markdown_source(cx: &mut TestAppContext) {
