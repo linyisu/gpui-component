@@ -6289,9 +6289,9 @@ checksum = "973443cf09a9c8656b574a866ab68dfa19f0867d0340648c7d2f6a71b8a8ea68"
 
 [[package]]
 name = "ratex-font"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afbff82873da9cb006b75910c4978ccf5a0e42b95e92b45f0361751e83134eb3"
+checksum = "cdb8cd1407330c193689e7087357277e251f8677725f0ed69f86c55a61d3e794"
 dependencies = [
  "phf 0.11.3",
  "ratex-types",
@@ -6299,18 +6299,18 @@ dependencies = [
 
 [[package]]
 name = "ratex-katex-fonts"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "356dda9769af6a785e9ba8fe2ffa89fd22b047cec5f4e26767a5e29548108ac6"
+checksum = "754f6a9317de3a13cb18f3773470c6c426f21254c9f1b7e24283511327978a1d"
 dependencies = [
  "rust-embed",
 ]
 
 [[package]]
 name = "ratex-layout"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13a343bc5b02d64d5569dd71c388386f140f7caef2aa17f1d90af40db8194249"
+checksum = "f8b5bf9b6728aac092a2c69fe89849edb969761c732022d68631a30d69afce11"
 dependencies = [
  "ratex-font",
  "ratex-parser",
@@ -6320,9 +6320,9 @@ dependencies = [
 
 [[package]]
 name = "ratex-lexer"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34501a6076195853f6888a4b725b2fa4e6c58708f817ad22d48b70fd6ad47354"
+checksum = "71adfea636459f2bf318c29b69da018614c72c80e5279750d90f2d9ea30f91b2"
 dependencies = [
  "ratex-types",
  "serde",
@@ -6331,9 +6331,9 @@ dependencies = [
 
 [[package]]
 name = "ratex-parser"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e9c6108fa2f093a2f71f4212d698796777ed86e8a10dd00d23712944fa6e403"
+checksum = "681ae8b934adfd2a2c5092ddde170b1a564e30fe9350be271bae07566d9e584d"
 dependencies = [
  "fancy-regex",
  "ratex-font",
@@ -6349,9 +6349,9 @@ dependencies = [
 
 [[package]]
 name = "ratex-types"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ff31d1010354f0e22ade3ded5bb108d28a7239d0fee8e187a045a89100590c2"
+checksum = "656fe3a112dadd658b14c482c71b8c53540206a35217a342b4518a1f80b072b8"
 dependencies = [
  "serde",
 ]
