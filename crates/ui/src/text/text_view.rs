@@ -354,8 +354,8 @@ mod tests {
     use crate::text::TextViewState;
     use gpui::{
         AppContext as _, Context, Entity, IntoElement, Modifiers, MouseButton, MouseDownEvent,
-        MouseUpEvent, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext,
-        Window, div, point, px,
+        MouseUpEvent, ParentElement as _, Pixels, Point, Render, Styled as _, TestAppContext,
+        VisualTestContext, Window, div, point, px,
     };
 
     struct TextViewTestRoot {
@@ -424,6 +424,33 @@ mod tests {
                 .h(px(420.))
                 .child(TextView::new(&self.text_view).selectable(true))
         }
+    }
+
+    fn draw_once(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+    }
+
+    fn simulate_multi_click(
+        cx: &mut VisualTestContext,
+        position: Point<Pixels>,
+        click_count: usize,
+    ) {
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+        });
     }
 
     #[gpui::test]
@@ -550,10 +577,7 @@ mod tests {
             )
         });
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         cx.simulate_mouse_down(
             point(px(0.), px(16.)),
@@ -570,13 +594,11 @@ mod tests {
             MouseButton::Left,
             Modifiers::default(),
         );
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(
-            selected_text.trim(),
+            selected_text,
             "A [![B](https://example.com/b.svg)](https://example.com/ci) C"
         );
     }
@@ -587,10 +609,7 @@ mod tests {
         cx.update(crate::init);
         let (view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("A $x^2$ C", cx));
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         cx.simulate_mouse_down(
             point(px(0.), px(16.)),
@@ -607,12 +626,10 @@ mod tests {
             MouseButton::Left,
             Modifiers::default(),
         );
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
-        assert_eq!(selected_text.trim(), "A $x^2$ C");
+        assert_eq!(selected_text, "A $x^2$ C");
     }
 
     #[gpui::test]
@@ -626,10 +643,7 @@ mod tests {
         );
         let (view, cx) = cx.add_window_view(|_, cx| WideTextViewTestRoot::new(markdown, cx));
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         cx.simulate_mouse_down(
             point(px(0.), px(16.)),
@@ -646,13 +660,11 @@ mod tests {
             MouseButton::Left,
             Modifiers::default(),
         );
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(
-            selected_text.trim(),
+            selected_text,
             concat!(
                 "Build Status ",
                 "[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)]",
@@ -681,10 +693,7 @@ mod tests {
         );
         let (_, cx) = cx.add_window_view(|_, cx| MixedListTextViewTestRoot::new(markdown, cx));
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
     }
 
     #[gpui::test]
@@ -693,31 +702,46 @@ mod tests {
         let (view, cx) = cx
             .add_window_view(|_, cx| TextViewTestRoot::new("![B](https://example.com/b.svg)", cx));
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         let position = point(px(5.), px(16.));
-        cx.simulate_event(MouseDownEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 2,
-        });
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        simulate_multi_click(cx, position, 2);
+        draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(selected_text, "![B](https://example.com/b.svg)");
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[gpui::test]
+    fn double_click_selects_inline_math(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("A $x^2$ C", cx));
+        let cx: &mut VisualTestContext = cx;
+        draw_once(cx);
+
+        let position = point(px(28.), px(16.));
+        simulate_multi_click(cx, position, 2);
+        draw_once(cx);
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(selected_text.trim(), "$x^2$");
+    }
+
+    #[cfg(feature = "markdown-math")]
+    #[gpui::test]
+    fn triple_click_inline_math_selects_paragraph(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("A $x^2$ C", cx));
+        let cx: &mut VisualTestContext = cx;
+        draw_once(cx);
+
+        let position = point(px(28.), px(16.));
+        simulate_multi_click(cx, position, 3);
+        draw_once(cx);
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(selected_text.trim(), "A $x^2$ C");
     }
 
     #[gpui::test]
@@ -727,27 +751,10 @@ mod tests {
             cx.add_window_view(|_, cx| TextViewTestRoot::new("quick select value", cx));
 
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
         let position = point(px(10.), px(16.));
-        cx.simulate_event(MouseDownEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 2,
-        });
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        simulate_multi_click(cx, position, 2);
+        draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(selected_text.trim(), "quick");
@@ -760,28 +767,11 @@ mod tests {
             cx.add_window_view(|_, cx| TextViewTestRoot::new("quick select value", cx));
 
         let cx: &mut VisualTestContext = cx;
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        draw_once(cx);
 
         let position = point(px(10.), px(10.));
-        cx.simulate_event(MouseDownEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 3,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            position,
-            modifiers: Modifiers::default(),
-            button: MouseButton::Left,
-            click_count: 3,
-        });
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        simulate_multi_click(cx, position, 3);
+        draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(selected_text.trim(), "quick select value");

@@ -139,44 +139,31 @@ impl BlockNode {
         match self {
             BlockNode::Root { children, .. } => {
                 let block_text = Self::children_text(children, kind);
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
-                }
+                Self::push_block_text(&mut text, &block_text, kind);
             }
             BlockNode::Paragraph(paragraph) => {
                 let block_text = match kind {
                     BlockTextKind::All => paragraph.text(),
                     BlockTextKind::Selected => paragraph.selected_text(),
                 };
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
-                }
+                Self::push_block_text(&mut text, &block_text, kind);
             }
             BlockNode::Heading { children, .. } => {
                 let block_text = match kind {
                     BlockTextKind::All => children.text(),
                     BlockTextKind::Selected => children.selected_text(),
                 };
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
-                }
+                Self::push_block_text(&mut text, &block_text, kind);
             }
             BlockNode::List { children, .. } | BlockNode::ListItem { children, .. } => {
                 text.push_str(&Self::children_text(children, kind));
             }
             BlockNode::Blockquote { children, .. } => {
                 let block_text = Self::children_text(children, kind);
-
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
-                }
+                Self::push_block_text(&mut text, &block_text, kind);
             }
             BlockNode::Table(table) => {
-                let mut block_text = String::new();
+                let mut rows = Vec::new();
                 for row in table.children.iter() {
                     let mut row_texts = vec![];
                     for cell in row.children.iter() {
@@ -189,14 +176,23 @@ impl BlockNode {
                         }
                     }
                     if !row_texts.is_empty() {
-                        block_text.push_str(&row_texts.join(" "));
-                        block_text.push('\n');
+                        rows.push(row_texts.join(" "));
                     }
                 }
 
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
+                if !rows.is_empty() {
+                    let block_text = match kind {
+                        BlockTextKind::All => {
+                            let mut block_text = String::new();
+                            for row in rows {
+                                block_text.push_str(&row);
+                                block_text.push('\n');
+                            }
+                            block_text
+                        }
+                        BlockTextKind::Selected => rows.join("\n"),
+                    };
+                    Self::push_block_text(&mut text, &block_text, kind);
                 }
             }
             BlockNode::CodeBlock(code_block) => {
@@ -204,20 +200,14 @@ impl BlockNode {
                     BlockTextKind::All => code_block.text(),
                     BlockTextKind::Selected => code_block.selected_text(),
                 };
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
-                }
+                Self::push_block_text(&mut text, &block_text, kind);
             }
             BlockNode::Math(math) => {
                 let block_text = match kind {
                     BlockTextKind::All => math.markdown_source().to_string(),
                     BlockTextKind::Selected => math.selected_text(),
                 };
-                if !block_text.is_empty() {
-                    text.push_str(&block_text);
-                    text.push('\n');
-                }
+                Self::push_block_text(&mut text, &block_text, kind);
             }
             BlockNode::Definition { .. }
             | BlockNode::Break { .. }
@@ -229,12 +219,34 @@ impl BlockNode {
     }
 
     fn children_text(children: &[BlockNode], kind: BlockTextKind) -> String {
-        let mut text = String::new();
-        for child in children.iter() {
-            text.push_str(&child.text_by_kind(kind));
+        match kind {
+            BlockTextKind::All => {
+                let mut text = String::new();
+                for child in children.iter() {
+                    text.push_str(&child.text_by_kind(kind));
+                }
+                text
+            }
+            BlockTextKind::Selected => children
+                .iter()
+                .filter_map(|child| {
+                    let text = child.text_by_kind(kind);
+                    (!text.is_empty()).then_some(text)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
+    fn push_block_text(text: &mut String, block_text: &str, kind: BlockTextKind) {
+        if block_text.is_empty() {
+            return;
         }
 
-        text
+        text.push_str(block_text);
+        if matches!(kind, BlockTextKind::All) {
+            text.push('\n');
+        }
     }
 }
 
@@ -1898,7 +1910,7 @@ mod tests {
             ..Default::default()
         });
 
-        assert_eq!(table.selected_text(), "selected\n\n");
+        assert_eq!(table.selected_text(), "selected");
     }
 
     #[cfg(feature = "markdown-math")]

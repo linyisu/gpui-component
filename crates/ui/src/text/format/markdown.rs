@@ -549,9 +549,6 @@ fn ast_to_node(value: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> BlockN
                 .map(|c| ast_to_node(c, ctx))
                 .collect();
 
-            // Setext heading false-positive: `- [x] text\n  -` can be parsed as
-            // a Heading inside a ListItem. Since headings don't belong inside
-            // list items, demote them to paragraphs.
             let mut checked = val.checked;
             fix_setext_false_positive_in_list_item(&mut children, &mut checked);
 

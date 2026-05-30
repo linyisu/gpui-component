@@ -245,7 +245,7 @@ struct LaidOutInlineText {
     source_text: SharedString,
     source_range: Range<usize>,
     state: Arc<Mutex<InlineState>>,
-    line: ShapedLine,
+    line: Arc<ShapedLine>,
     links: Vec<(Range<usize>, LinkMark)>,
 }
 
@@ -255,7 +255,7 @@ struct LaidOutInlineSelectionTarget {
     source_text: SharedString,
     source_range: Option<Range<usize>>,
     state: Arc<Mutex<InlineState>>,
-    line: Option<ShapedLine>,
+    line: Option<Arc<ShapedLine>>,
 }
 
 struct LaidOutInlineMath {
@@ -264,6 +264,8 @@ struct LaidOutInlineMath {
     size: Size<Pixels>,
     node: MathNode,
     link: Option<LinkMark>,
+    source_text: SharedString,
+    state: Arc<Mutex<InlineState>>,
 }
 
 struct LaidOutInlineImage {
@@ -282,12 +284,21 @@ struct InlineItemMetrics {
     descent: Pixels,
 }
 
+#[derive(Clone, Copy)]
+struct ParagraphInlineFlowParams<'a> {
+    wrap_width: Pixels,
+    line_height: Pixels,
+    default_metrics: InlineItemMetrics,
+    prefix_width: Pixels,
+    text_style: &'a TextStyle,
+}
+
 enum ParagraphInlinePrefix {
     Marker {
         y: Pixels,
         width: Pixels,
         height: Pixels,
-        line: Option<ShapedLine>,
+        line: Option<Arc<ShapedLine>>,
     },
     Todo {
         y: Pixels,
@@ -325,11 +336,12 @@ fn paragraph_inline_prefix(
             let text = list_item_prefix(ix, ordered, depth);
             let len = text.len();
             let line = shape_inline_text(text.into(), &[], 0..len, text_style, window, cx);
+            let width = line.width();
             Some(ParagraphInlinePrefix::Marker {
                 y: px(0.),
-                width: line.width(),
+                width,
                 height: text_style.line_height_in_pixels(window.rem_size()),
-                line: visible.then_some(line),
+                line: visible.then(|| Arc::new(line)),
             })
         }
         Some(ListItemPrefix::Todo { checked, visible }) => {
@@ -676,6 +688,13 @@ fn compute_paragraph_inline_layout(
 
     let mut flow_items: Vec<ParagraphInlineFlowItem<'_>> = Vec::new();
     let mut logical = String::new();
+    let flow_params = ParagraphInlineFlowParams {
+        wrap_width,
+        line_height,
+        default_metrics,
+        prefix_width,
+        text_style,
+    };
 
     for item in items {
         match item {
@@ -685,11 +704,7 @@ fn compute_paragraph_inline_layout(
                     &mut line,
                     &mut flow_items,
                     &mut logical,
-                    wrap_width,
-                    line_height,
-                    default_metrics,
-                    prefix_width,
-                    text_style,
+                    flow_params,
                     window,
                     cx,
                 );
@@ -719,11 +734,7 @@ fn compute_paragraph_inline_layout(
                     &mut line,
                     &mut flow_items,
                     &mut logical,
-                    wrap_width,
-                    line_height,
-                    default_metrics,
-                    prefix_width,
-                    text_style,
+                    flow_params,
                     window,
                     cx,
                 );
@@ -747,6 +758,8 @@ fn compute_paragraph_inline_layout(
                         size: metrics.size,
                         node: math.node.clone(),
                         link: math.link.clone(),
+                        source_text: math.node.markdown_source(),
+                        state: math.node.state(),
                     }));
                 finish_paragraph_inline_line(
                     &mut computed,
@@ -799,11 +812,7 @@ fn compute_paragraph_inline_layout(
         &mut line,
         &mut flow_items,
         &mut logical,
-        wrap_width,
-        line_height,
-        default_metrics,
-        prefix_width,
-        text_style,
+        flow_params,
         window,
         cx,
     );
@@ -846,11 +855,7 @@ fn flush_paragraph_inline_flow_items(
     line: &mut ParagraphInlineLine,
     flow_items: &mut Vec<ParagraphInlineFlowItem<'_>>,
     logical: &mut String,
-    wrap_width: Pixels,
-    line_height: Pixels,
-    default_metrics: InlineItemMetrics,
-    prefix_width: Pixels,
-    text_style: &TextStyle,
+    params: ParagraphInlineFlowParams<'_>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -864,11 +869,7 @@ fn flush_paragraph_inline_flow_items(
         line,
         flow_items,
         &logical_breaks,
-        wrap_width,
-        line_height,
-        default_metrics,
-        prefix_width,
-        text_style,
+        params,
         window,
         cx,
     );
@@ -881,11 +882,7 @@ fn append_paragraph_inline_flow_items(
     line: &mut ParagraphInlineLine,
     flow_items: &[ParagraphInlineFlowItem<'_>],
     logical_breaks: &[usize],
-    wrap_width: Pixels,
-    line_height: Pixels,
-    default_metrics: InlineItemMetrics,
-    prefix_width: Pixels,
-    text_style: &TextStyle,
+    params: ParagraphInlineFlowParams<'_>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -901,7 +898,7 @@ fn append_paragraph_inline_flow_items(
         while end < flow_items.len() {
             let item = &flow_items[end];
             let next_width = line_width + item.width;
-            if next_width > wrap_width && end > line_start {
+            if next_width > params.wrap_width && end > line_start {
                 break;
             }
 
@@ -913,7 +910,7 @@ fn append_paragraph_inline_flow_items(
                 last_break_end = Some(end);
             }
 
-            if line_width > wrap_width {
+            if line_width > params.wrap_width {
                 break;
             }
         }
@@ -930,11 +927,11 @@ fn append_paragraph_inline_flow_items(
             && line.width
                 + paragraph_inline_flow_items_width(
                     &flow_items[start..line_end],
-                    text_style,
+                    params.text_style,
                     window,
                     cx,
                 )
-                > wrap_width
+                > params.wrap_width
         {
             line_end -= 1;
         }
@@ -942,14 +939,19 @@ fn append_paragraph_inline_flow_items(
         push_paragraph_inline_flow_items(
             line,
             &flow_items[start..line_end],
-            line_height,
-            text_style,
+            params.line_height,
+            params.text_style,
             window,
             cx,
         );
 
         if line_end < flow_items.len() {
-            finish_paragraph_inline_line(computed, line, prefix_width, default_metrics);
+            finish_paragraph_inline_line(
+                computed,
+                line,
+                params.prefix_width,
+                params.default_metrics,
+            );
         }
 
         start = line_end;
@@ -1093,7 +1095,7 @@ fn push_laid_out_text(
             source_text: text.source_text.clone(),
             source_range: (text.source_offset + range.start)..(text.source_offset + range.end),
             state: text.state.clone(),
-            line: shaped,
+            line: Arc::new(shaped),
             links: text.links.clone(),
         }));
     line.width += width;
@@ -1135,6 +1137,8 @@ fn push_laid_out_math(
             size: metrics.size,
             node: math.node.clone(),
             link: math.link.clone(),
+            source_text: math.node.markdown_source(),
+            state: math.node.state(),
         }));
     line.width += metrics.size.width;
 }
@@ -1470,7 +1474,6 @@ fn paint_paragraph_inline_layout(
                     };
                     let selected = selected_range_for_inline_object(
                         image_bounds,
-                        image.size.width,
                         window,
                         cx,
                         &mut text_states,
@@ -1493,11 +1496,22 @@ fn paint_paragraph_inline_layout(
                     }
                 }
                 ParagraphInlineLayoutItem::Math(math) => {
+                    record_text_state(&mut text_states, &math.state, math.source_text.clone());
                     let origin = bounds.origin + point(line_offset + math.x, line.y + math.y);
                     let math_bounds = Bounds {
                         origin,
                         size: math.size,
                     };
+                    let selected = selected_range_for_inline_object(
+                        math_bounds,
+                        window,
+                        cx,
+                        &mut text_states,
+                        &math.state,
+                        math.source_text.len(),
+                        &multi_click_ranges,
+                    );
+                    set_inline_state_selection(&math.state, math.source_text.clone(), selected);
                     let text_color = math.link.as_ref().map(|_| cx.theme().link);
                     math.node.paint_at(math_bounds, text_color, window, cx);
                     if let Some(link) = &math.link
@@ -1701,7 +1715,19 @@ fn paragraph_inline_selection_targets(
                         line: None,
                     });
                 }
-                ParagraphInlineLayoutItem::Math(_) => {}
+                ParagraphInlineLayoutItem::Math(math) => {
+                    let origin = bounds.origin + point(line_offset + math.x, line.y + math.y);
+                    targets.push(LaidOutInlineSelectionTarget {
+                        bounds: Bounds {
+                            origin,
+                            size: math.size,
+                        },
+                        source_text: math.source_text.clone(),
+                        source_range: None,
+                        state: math.state.clone(),
+                        line: None,
+                    });
+                }
             }
         }
     }
@@ -1887,7 +1913,6 @@ fn selected_ranges_for_text(
 
 fn selected_range_for_inline_object(
     bounds: Bounds<Pixels>,
-    width: Pixels,
     window: &mut Window,
     cx: &mut App,
     states: &mut Vec<(Arc<Mutex<InlineState>>, SharedString, Option<Range<usize>>)>,
@@ -1922,7 +1947,7 @@ fn selected_range_for_inline_object(
     } else if let Some((selection_start, selection_end)) = text_view_state.selection_points() {
         point_in_inline_selection(
             bounds.origin,
-            width.max(window.line_height().half()),
+            bounds.size.width.max(window.line_height().half()),
             selection_start,
             selection_end,
             bounds.size.height,
@@ -1938,6 +1963,17 @@ fn selected_range_for_inline_object(
     let range = 0..len;
     record_selected_range_for_state(states, state, range.clone());
     Some(range)
+}
+
+fn set_inline_state_selection(
+    state: &Arc<Mutex<InlineState>>,
+    text: SharedString,
+    selection: Option<Range<usize>>,
+) {
+    if let Ok(mut state) = state.lock() {
+        state.text = text;
+        state.selection = selection.map(Into::into);
+    }
 }
 
 fn record_selected_range_for_state(

@@ -159,6 +159,10 @@ mod real {
             self.markdown_source.clone()
         }
 
+        pub(crate) fn state(&self) -> Arc<Mutex<InlineState>> {
+            self.state.clone()
+        }
+
         pub(crate) fn selected_text(&self) -> String {
             let state = self.state.lock().unwrap();
             if let Some(selection) = &state.selection {
@@ -274,10 +278,16 @@ mod real {
             }
 
             let is_selected = text_view_state.is_selectable()
-                && text_view_state
-                    .selection_points()
-                    .map(|(start, end)| bounds_intersects_selection(bounds, start, end, window))
-                    .unwrap_or(false);
+                && if text_view_state.is_all_selected() {
+                    true
+                } else if text_view_state.multi_click_selection().is_some() {
+                    self.node.state.lock().unwrap().selection.is_some()
+                } else {
+                    text_view_state
+                        .selection_points()
+                        .map(|(start, end)| bounds_intersects_selection(bounds, start, end, window))
+                        .unwrap_or(false)
+                };
 
             let mut state = self.node.state.lock().unwrap();
             state.selection = if is_selected {
@@ -1083,16 +1093,28 @@ pub(super) fn init(cx: &mut gpui::App) {
 
 #[cfg(not(feature = "markdown-math"))]
 mod no_math {
+    use std::sync::{Arc, Mutex};
+
     use gpui::{AnyElement, App, Bounds, Hsla, IntoElement, Pixels, SharedString, Window, div};
 
-    use crate::text::node::Span;
+    use crate::text::{inline::InlineState, node::Span};
 
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone)]
     pub(crate) struct MathNode {
         source: SharedString,
         markdown_source: SharedString,
         display: bool,
+        state: Arc<Mutex<InlineState>>,
         span: Option<Span>,
+    }
+
+    impl PartialEq for MathNode {
+        fn eq(&self, other: &Self) -> bool {
+            self.source == other.source
+                && self.markdown_source == other.markdown_source
+                && self.display == other.display
+                && self.span == other.span
+        }
     }
 
     impl MathNode {
@@ -1108,10 +1130,15 @@ mod no_math {
             markdown_source: impl Into<SharedString>,
             display: bool,
         ) -> Self {
+            let markdown_source = markdown_source.into();
+            let state = Arc::new(Mutex::new(InlineState::default()));
+            state.lock().unwrap().set_text(markdown_source.clone());
+
             Self {
                 source: source.into(),
-                markdown_source: markdown_source.into(),
+                markdown_source,
                 display,
+                state,
                 span: None,
             }
         }
@@ -1126,6 +1153,10 @@ mod no_math {
             markdown_source: impl Into<SharedString>,
         ) -> Self {
             self.markdown_source = markdown_source.into();
+            self.state
+                .lock()
+                .unwrap()
+                .set_text(self.markdown_source.clone());
             self
         }
 
@@ -1162,8 +1193,18 @@ mod no_math {
             self.markdown_source.clone()
         }
 
+        pub(crate) fn state(&self) -> Arc<Mutex<InlineState>> {
+            self.state.clone()
+        }
+
         pub(crate) fn selected_text(&self) -> String {
-            String::new()
+            let state = self.state.lock().unwrap();
+            if let Some(selection) = &state.selection {
+                let text = state.text.clone();
+                text[selection.start..selection.end].to_string()
+            } else {
+                String::new()
+            }
         }
     }
 }

@@ -73,11 +73,14 @@ impl ParsedDocument {
     }
 
     pub(super) fn selected_text(&self) -> String {
-        let mut text = String::new();
-        for block in self.blocks.iter() {
-            text.push_str(&block.selected_text());
-        }
-        text
+        self.blocks
+            .iter()
+            .filter_map(|block| {
+                let text = block.selected_text();
+                (!text.is_empty()).then_some(text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Converts the document back to markdown-like source.
