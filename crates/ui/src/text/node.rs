@@ -180,10 +180,13 @@ impl BlockNode {
                 for row in table.children.iter() {
                     let mut row_texts = vec![];
                     for cell in row.children.iter() {
-                        row_texts.push(match kind {
+                        let cell_text = match kind {
                             BlockTextKind::All => cell.children.text(),
                             BlockTextKind::Selected => cell.children.selected_text(),
-                        });
+                        };
+                        if matches!(kind, BlockTextKind::All) || !cell_text.is_empty() {
+                            row_texts.push(cell_text);
+                        }
                     }
                     if !row_texts.is_empty() {
                         block_text.push_str(&row_texts.join(" "));
@@ -1842,6 +1845,60 @@ mod tests {
             .set_text("b".into());
 
         assert_eq!(paragraph.selected_text(), "a");
+    }
+
+    #[test]
+    fn test_table_selected_text_skips_unselected_cells_and_rows() {
+        let mut selected = Paragraph::default();
+        selected.push_str("selected");
+        selected.children[0]
+            .state
+            .lock()
+            .unwrap()
+            .set_text("selected".into());
+        selected.children[0].state.lock().unwrap().selection = Some((0.."selected".len()).into());
+
+        let table = BlockNode::Table(Table {
+            children: vec![
+                TableRow {
+                    children: vec![
+                        TableCell {
+                            children: Paragraph::new("header a".into()),
+                            ..Default::default()
+                        },
+                        TableCell {
+                            children: Paragraph::new("header b".into()),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                TableRow {
+                    children: vec![
+                        TableCell {
+                            children: Paragraph::new("left".into()),
+                            ..Default::default()
+                        },
+                        TableCell {
+                            children: selected,
+                            ..Default::default()
+                        },
+                        TableCell {
+                            children: Paragraph::new("right".into()),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                TableRow {
+                    children: vec![TableCell {
+                        children: Paragraph::new("footer".into()),
+                        ..Default::default()
+                    }],
+                },
+            ],
+            ..Default::default()
+        });
+
+        assert_eq!(table.selected_text(), "selected\n\n");
     }
 
     #[cfg(feature = "markdown-math")]
