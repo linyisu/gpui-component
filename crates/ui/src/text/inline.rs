@@ -192,6 +192,7 @@ struct ParagraphInlineComputed {
     prefix: Option<ParagraphInlinePrefix>,
     lines: Vec<ParagraphInlineLine>,
     size: Size<Pixels>,
+    source_text: SharedString,
 }
 
 struct ParagraphInlineLine {
@@ -669,6 +670,7 @@ fn compute_paragraph_inline_layout(
         .map(|width| (width - prefix_width).max(px(0.)))
         .unwrap_or(Pixels::MAX / 2.);
     let mut computed = ParagraphInlineComputed::default();
+    computed.source_text = paragraph_inline_items_source_text(items);
     computed.prefix = prefix;
     if items.is_empty() && computed.prefix.is_none() {
         if let Some(width) = width {
@@ -825,6 +827,21 @@ fn compute_paragraph_inline_layout(
     }
     align_paragraph_inline_prefix(&mut computed);
     computed
+}
+
+fn paragraph_inline_items_source_text(items: &[ParagraphInlineItem]) -> SharedString {
+    let mut source_text = String::new();
+    for item in items {
+        match item {
+            ParagraphInlineItem::Text(text) => source_text.push_str(&text.text),
+            ParagraphInlineItem::Image(image) => source_text.push_str(&image.source_text),
+            ParagraphInlineItem::Math(math) => {
+                source_text.push_str(math.node.markdown_source().as_ref())
+            }
+            ParagraphInlineItem::Break => source_text.push('\n'),
+        }
+    }
+    source_text.into()
 }
 
 fn finish_paragraph_inline_line(
@@ -1398,7 +1415,8 @@ fn paint_paragraph_inline_layout(
         .map_or(px(0.), ParagraphInlinePrefix::width);
     let selection_targets =
         paragraph_inline_selection_targets(layout, bounds, prefix_width, options);
-    let multi_click_ranges = paragraph_inline_multi_click_selection_ranges(&selection_targets, cx);
+    let multi_click_ranges =
+        paragraph_inline_multi_click_selection_ranges(&selection_targets, &layout.source_text, cx);
 
     for line in &mut layout.lines {
         let line_offset = paragraph_line_offset(line, bounds.size.width, prefix_width, options);
@@ -1546,6 +1564,7 @@ fn paint_paragraph_inline_layout(
         let current_view = window.current_view();
         let click_hitbox = hitbox.clone();
         let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+        let source_text = layout.source_text.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if !phase.bubble()
                 || !click_hitbox.is_hovered(window)
@@ -1560,9 +1579,12 @@ fn paint_paragraph_inline_layout(
                 _ => return,
             };
 
-            let Some((ranges, selected_text)) =
-                selection_for_multi_click_targets(&selection_targets, event.position, kind)
-            else {
+            let Some((ranges, selected_text)) = selection_for_multi_click_targets(
+                &selection_targets,
+                &source_text,
+                event.position,
+                kind,
+            ) else {
                 return;
             };
 
@@ -1737,6 +1759,7 @@ fn paragraph_inline_selection_targets(
 
 fn paragraph_inline_multi_click_selection_ranges(
     targets: &[LaidOutInlineSelectionTarget],
+    source_text: &SharedString,
     cx: &mut App,
 ) -> Vec<(Arc<Mutex<InlineState>>, Range<usize>)> {
     let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
@@ -1746,13 +1769,14 @@ fn paragraph_inline_multi_click_selection_ranges(
         return Vec::new();
     };
 
-    selection_for_multi_click_targets(targets, selection.pos, selection.kind)
+    selection_for_multi_click_targets(targets, source_text, selection.pos, selection.kind)
         .map(|(ranges, _)| ranges)
         .unwrap_or_default()
 }
 
 fn selection_for_multi_click_targets(
     targets: &[LaidOutInlineSelectionTarget],
+    source_text: &SharedString,
     pos: Point<Pixels>,
     kind: TextViewMultiClickKind,
 ) -> Option<(Vec<(Arc<Mutex<InlineState>>, Range<usize>)>, String)> {
@@ -1768,7 +1792,6 @@ fn selection_for_multi_click_targets(
         }
         TextViewMultiClickKind::Paragraph => {
             let mut ranges = Vec::new();
-            let mut selected_text = String::new();
             for target in targets {
                 if ranges
                     .iter()
@@ -1782,9 +1805,9 @@ fn selection_for_multi_click_targets(
                 }
 
                 ranges.push((target.state.clone(), 0..target.source_text.len()));
-                selected_text.push_str(&target.source_text);
             }
 
+            let selected_text = source_text.to_string();
             (!selected_text.is_empty()).then_some((ranges, selected_text))
         }
     }

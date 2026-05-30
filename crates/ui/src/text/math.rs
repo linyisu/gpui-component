@@ -73,7 +73,9 @@ mod real {
             let layout_box = layout(&ast, &options);
             let display_list = to_display_list(&layout_box);
             let state = Arc::new(Mutex::new(InlineState::default()));
-            state.lock().unwrap().set_text(markdown_source.clone());
+            if let Ok(mut state) = state.lock() {
+                state.set_text(markdown_source.clone());
+            }
 
             Ok(Self {
                 source,
@@ -93,7 +95,9 @@ mod real {
             let source = source.into();
             let markdown_source = markdown_source.into();
             let state = Arc::new(Mutex::new(InlineState::default()));
-            state.lock().unwrap().set_text(markdown_source.clone());
+            if let Ok(mut state) = state.lock() {
+                state.set_text(markdown_source.clone());
+            }
 
             Self {
                 source,
@@ -115,10 +119,9 @@ mod real {
             markdown_source: impl Into<SharedString>,
         ) -> Self {
             self.markdown_source = markdown_source.into();
-            self.state
-                .lock()
-                .unwrap()
-                .set_text(self.markdown_source.clone());
+            if let Ok(mut state) = self.state.lock() {
+                state.set_text(self.markdown_source.clone());
+            }
             self
         }
 
@@ -164,13 +167,13 @@ mod real {
         }
 
         pub(crate) fn selected_text(&self) -> String {
-            let state = self.state.lock().unwrap();
-            if let Some(selection) = &state.selection {
+            if let Ok(state) = self.state.lock()
+                && let Some(selection) = &state.selection
+            {
                 let text = state.text.clone();
-                text[selection.start..selection.end].to_string()
-            } else {
-                String::new()
+                return text[selection.start..selection.end].to_string();
             }
+            String::new()
         }
 
         #[cfg(test)]
@@ -268,12 +271,16 @@ mod real {
 
         fn update_selection(&self, bounds: Bounds<Pixels>, window: &Window, cx: &mut App) -> bool {
             let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
-                self.node.state.lock().unwrap().selection = None;
+                if let Ok(mut state) = self.node.state.lock() {
+                    state.selection = None;
+                }
                 return false;
             };
             let text_view_state = text_view_state.read(cx);
             if !text_view_state.has_selection() {
-                self.node.state.lock().unwrap().selection = None;
+                if let Ok(mut state) = self.node.state.lock() {
+                    state.selection = None;
+                }
                 return false;
             }
 
@@ -281,7 +288,11 @@ mod real {
                 && if text_view_state.is_all_selected() {
                     true
                 } else if text_view_state.multi_click_selection().is_some() {
-                    self.node.state.lock().unwrap().selection.is_some()
+                    self.node
+                        .state
+                        .lock()
+                        .map(|state| state.selection.is_some())
+                        .unwrap_or(false)
                 } else {
                     text_view_state
                         .selection_points()
@@ -289,7 +300,9 @@ mod real {
                         .unwrap_or(false)
                 };
 
-            let mut state = self.node.state.lock().unwrap();
+            let Ok(mut state) = self.node.state.lock() else {
+                return false;
+            };
             state.selection = if is_selected {
                 Some((0..state.text.len()).into())
             } else {
@@ -1132,7 +1145,9 @@ mod no_math {
         ) -> Self {
             let markdown_source = markdown_source.into();
             let state = Arc::new(Mutex::new(InlineState::default()));
-            state.lock().unwrap().set_text(markdown_source.clone());
+            if let Ok(mut state) = state.lock() {
+                state.set_text(markdown_source.clone());
+            }
 
             Self {
                 source: source.into(),
@@ -1153,10 +1168,9 @@ mod no_math {
             markdown_source: impl Into<SharedString>,
         ) -> Self {
             self.markdown_source = markdown_source.into();
-            self.state
-                .lock()
-                .unwrap()
-                .set_text(self.markdown_source.clone());
+            if let Ok(mut state) = self.state.lock() {
+                state.set_text(self.markdown_source.clone());
+            }
             self
         }
 
@@ -1198,13 +1212,13 @@ mod no_math {
         }
 
         pub(crate) fn selected_text(&self) -> String {
-            let state = self.state.lock().unwrap();
-            if let Some(selection) = &state.selection {
+            if let Ok(state) = self.state.lock()
+                && let Some(selection) = &state.selection
+            {
                 let text = state.text.clone();
-                text[selection.start..selection.end].to_string()
-            } else {
-                String::new()
+                return text[selection.start..selection.end].to_string();
             }
+            String::new()
         }
     }
 }

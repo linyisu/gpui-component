@@ -776,4 +776,20 @@ mod tests {
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(selected_text.trim(), "quick select value");
     }
+
+    #[gpui::test]
+    fn triple_click_selects_paragraph_with_line_break(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("a<br>b", cx));
+
+        let cx: &mut VisualTestContext = cx;
+        draw_once(cx);
+
+        let position = point(px(5.), px(10.));
+        simulate_multi_click(cx, position, 3);
+        draw_once(cx);
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert_eq!(selected_text, "a\nb");
+    }
 }

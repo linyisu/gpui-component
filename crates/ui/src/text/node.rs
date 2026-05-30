@@ -666,7 +666,10 @@ impl CodeBlock {
 
     /// Get the code content of the code block.
     pub fn code(&self) -> SharedString {
-        self.state.lock().unwrap().text.clone()
+        self.state
+            .lock()
+            .map(|state| state.text.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn new(
@@ -676,7 +679,9 @@ impl CodeBlock {
         span: Option<impl Into<Span>>,
     ) -> Self {
         let state = Arc::new(Mutex::new(InlineState::default()));
-        state.lock().unwrap().set_text(code);
+        if let Ok(mut state) = state.lock() {
+            state.set_text(code);
+        }
 
         Self {
             lang,
@@ -735,8 +740,9 @@ impl CodeBlock {
 
     pub(super) fn selected_text(&self) -> String {
         let mut text = String::new();
-        let state = self.state.lock().unwrap();
-        if let Some(selection) = &state.selection {
+        if let Ok(state) = self.state.lock()
+            && let Some(selection) = &state.selection
+        {
             let part_text = state.text.clone();
             text.push_str(&part_text[selection.start..selection.end]);
         }
