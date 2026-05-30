@@ -331,6 +331,10 @@ impl ImageNode {
             .to_string()
     }
 
+    pub(crate) fn plain_text(&self) -> SharedString {
+        self.alt.clone().unwrap_or_default()
+    }
+
     pub(crate) fn markdown_source(&self) -> String {
         let alt = self.alt.clone().unwrap_or_default();
         let title = self
@@ -514,7 +518,7 @@ impl Paragraph {
             if node.line_break {
                 text.push('\n');
             } else if let Some(image) = &node.image {
-                text.push_str(&image.markdown_source());
+                text.push_str(&image.plain_text());
             } else if let Some(math) = &node.math {
                 text.push_str(math.markdown_source().as_ref());
             } else {

@@ -614,10 +614,7 @@ mod tests {
 
         state.read_with(cx, |state, _| {
             assert!(state.has_selection());
-            assert_eq!(
-                state.selected_text().trim(),
-                "quick [![Rust](https://example.com/rust.svg \"Logo\")](https://example.com/ci) value"
-            );
+            assert_eq!(state.selected_text().trim(), "quick Rust value");
         });
 
         state.update(cx, |state, cx| {
@@ -627,6 +624,29 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert!(!state.has_selection());
             assert_eq!(state.selected_text(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn select_all_returns_html_image_alt_text(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::html(
+                    r#"<img width="1763" alt="Image" src="https://github.com/user-attachments/assets/e1ecb9c3-2dd3-431e-bd97-5a819c30e551" />"#,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.select_all(cx);
+        });
+
+        state.read_with(cx, |state, _| {
+            assert!(state.has_selection());
+            assert_eq!(state.selected_text().trim(), "Image");
         });
     }
 

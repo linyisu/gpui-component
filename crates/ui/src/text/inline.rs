@@ -456,7 +456,7 @@ impl ParagraphInlineLayout {
                     id: ix,
                     node: image.clone(),
                     size: measure_inline_image(image, None, window, cx),
-                    source_text: image.markdown_source().into(),
+                    source_text: image.plain_text(),
                     state: node.state.clone(),
                 }));
                 continue;
@@ -2358,7 +2358,7 @@ mod layout_tests {
                         width: px(72.),
                         height: px(20.),
                     },
-                    source_text: "![Build Status](https://example.com/badge.svg)".into(),
+                    source_text: "Build Status".into(),
                     state: Arc::new(Mutex::new(InlineState::default())),
                 },
             )];
@@ -2401,7 +2401,7 @@ mod layout_tests {
                 width: px(72.),
                 height: px(24.),
             },
-            source_text: "![Build Status](https://example.com/badge.svg)".into(),
+            source_text: "Build Status".into(),
             state: Arc::new(Mutex::new(InlineState::default())),
         };
         let mut line = super::ParagraphInlineLine {

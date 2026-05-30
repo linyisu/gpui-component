@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn selected_inline_image_copies_markdown_source(cx: &mut TestAppContext) {
+    fn selected_inline_image_copies_alt_text(cx: &mut TestAppContext) {
         cx.update(crate::init);
         let (view, cx) = cx.add_window_view(|_, cx| {
             TextViewTestRoot::new(
@@ -597,10 +597,7 @@ mod tests {
         draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
-        assert_eq!(
-            selected_text.trim(),
-            "A [![B](https://example.com/b.svg)](https://example.com/ci) C"
-        );
+        assert_eq!(selected_text.trim(), "A B C");
     }
 
     #[cfg(feature = "markdown-math")]
@@ -633,13 +630,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn selected_build_status_keeps_inline_image_source(cx: &mut TestAppContext) {
+    fn selected_badges_copy_alt_texts(cx: &mut TestAppContext) {
         cx.update(crate::init);
         let markdown = concat!(
-            "Build Status ",
             "[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)]",
             "(https://github.com/longbridge/gpui-component/actions/workflows/ci.yml)",
-            " of [GPUI Component](https://github.com/longbridge/gpui-component)."
+            " [![Docs](https://docs.rs/gpui-component/badge.svg)]",
+            "(https://docs.rs/gpui-component/)",
+            " [![Crates.io](https://img.shields.io/crates/v/gpui-component.svg)]",
+            "(https://crates.io/crates/gpui-component)"
         );
         let (view, cx) = cx.add_window_view(|_, cx| WideTextViewTestRoot::new(markdown, cx));
         let cx: &mut VisualTestContext = cx;
@@ -663,15 +662,7 @@ mod tests {
         draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
-        assert_eq!(
-            selected_text.trim(),
-            concat!(
-                "Build Status ",
-                "[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)]",
-                "(https://github.com/longbridge/gpui-component/actions/workflows/ci.yml)",
-                " of GPUI Component."
-            )
-        );
+        assert_eq!(selected_text.trim(), "Build Status Docs Crates.io");
     }
 
     #[gpui::test]
@@ -709,7 +700,7 @@ mod tests {
         draw_once(cx);
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
-        assert_eq!(selected_text, "![B](https://example.com/b.svg)");
+        assert_eq!(selected_text, "B");
     }
 
     #[cfg(feature = "markdown-math")]
