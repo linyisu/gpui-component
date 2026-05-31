@@ -259,10 +259,11 @@ impl Element for TextView {
         GlobalState::global_mut(cx).text_view_state_stack.pop();
 
         if self.selectable {
-            let is_selecting = state.read(cx).is_selecting;
-            let has_selection = state.read(cx).has_selection();
             let parent_view_id = window.current_view();
+            let scrollable = self.scrollable;
+            let viewport_bounds = hitbox.bounds;
 
+            // down inside to start selection
             window.on_mouse_event({
                 let state = state.clone();
                 let hitbox = hitbox.clone();
@@ -286,64 +287,72 @@ impl Element for TextView {
                 }
             });
 
-            if is_selecting {
-                let scrollable = self.scrollable;
-                let viewport_bounds = hitbox.bounds;
-
-                // move to update end position, auto-scroll when dragging near edges.
-                window.on_mouse_event({
-                    let state = state.clone();
-                    move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() {
-                            return;
-                        }
-
-                        state.update(cx, |state, cx| {
-                            state.update_selection(event.position);
-
-                            if scrollable {
-                                let delta =
-                                    AutoScroll::compute_delta(event.position.y, viewport_bounds);
-                                state.set_auto_scroll(delta, cx);
-                            }
-                        });
-                        cx.notify(parent_view_id);
+            // move to update end position, auto-scroll when dragging near edges.
+            window.on_mouse_event({
+                let state = state.clone();
+                move |event: &MouseMoveEvent, phase, _, cx| {
+                    if !phase.bubble() {
+                        return;
                     }
-                });
 
-                // up to end selection
-                window.on_mouse_event({
-                    let state = state.clone();
-                    move |_: &MouseUpEvent, phase, _, cx| {
-                        if !phase.bubble() {
-                            return;
-                        }
-
-                        state.update(cx, |state, _| {
-                            state.end_selection();
-                        });
-                        cx.notify(parent_view_id);
+                    let is_selecting = state.read(cx).is_selecting;
+                    if !is_selecting {
+                        return;
                     }
-                });
-            }
 
-            if has_selection {
-                // down outside to clear selection
-                window.on_mouse_event({
-                    let state = state.clone();
-                    let hitbox = hitbox.clone();
-                    move |_: &MouseDownEvent, _, window, cx| {
-                        if hitbox.is_hovered(window) {
-                            return;
+                    state.update(cx, |state, cx| {
+                        state.update_selection(event.position);
+
+                        if scrollable {
+                            let delta =
+                                AutoScroll::compute_delta(event.position.y, viewport_bounds);
+                            state.set_auto_scroll(delta, cx);
                         }
+                    });
+                    cx.notify(parent_view_id);
+                }
+            });
 
-                        state.update(cx, |state, cx| {
-                            state.clear_selection(cx);
-                        });
-                        cx.notify(parent_view_id);
+            // up to end selection
+            window.on_mouse_event({
+                let state = state.clone();
+                move |_: &MouseUpEvent, phase, _, cx| {
+                    if !phase.bubble() {
+                        return;
                     }
-                });
-            }
+
+                    let is_selecting = state.read(cx).is_selecting;
+                    if !is_selecting {
+                        return;
+                    }
+
+                    state.update(cx, |state, _| {
+                        state.end_selection();
+                    });
+                    cx.notify(parent_view_id);
+                }
+            });
+
+            // down outside to clear selection
+            window.on_mouse_event({
+                let state = state.clone();
+                let hitbox = hitbox.clone();
+                move |_: &MouseDownEvent, _, window, cx| {
+                    if hitbox.is_hovered(window) {
+                        return;
+                    }
+
+                    let has_selection = state.read(cx).has_selection();
+                    if !has_selection {
+                        return;
+                    }
+
+                    state.update(cx, |state, cx| {
+                        state.clear_selection(cx);
+                    });
+                    cx.notify(parent_view_id);
+                }
+            });
         }
     }
 }
