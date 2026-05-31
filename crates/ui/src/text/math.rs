@@ -1,4 +1,4 @@
-use gpui::{Pixels, Size};
+use gpui::{Pixels, SharedString, Size};
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct MathMetrics {
@@ -6,6 +6,14 @@ pub(crate) struct MathMetrics {
     /// The baseline offset from the top of `size`.
     pub(crate) ascent: Pixels,
     pub(crate) descent: Pixels,
+}
+
+fn math_markdown_source(source: &SharedString, display: bool) -> SharedString {
+    if display {
+        format!("$${}$$", source).into()
+    } else {
+        format!("${}$", source).into()
+    }
 }
 
 #[cfg(feature = "markdown-math")]
@@ -36,7 +44,6 @@ mod real {
     #[derive(Debug, Clone)]
     pub(crate) struct MathNode {
         source: SharedString,
-        markdown_source: SharedString,
         display: bool,
         display_list: Option<DisplayList>,
         state: Arc<Mutex<InlineState>>,
@@ -46,7 +53,6 @@ mod real {
     impl PartialEq for MathNode {
         fn eq(&self, other: &Self) -> bool {
             self.source == other.source
-                && self.markdown_source == other.markdown_source
                 && self.display == other.display
                 && self.span == other.span
         }
@@ -58,7 +64,6 @@ mod real {
             display: bool,
         ) -> Result<Self, SharedString> {
             let source = source.into();
-            let markdown_source = math_markdown_source(&source, display);
             let ast = ratex_parser::parse(source.as_ref())
                 .map_err(|err| SharedString::from(err.to_string()))?;
             let options = LayoutOptions {
@@ -72,14 +77,14 @@ mod real {
             };
             let layout_box = layout(&ast, &options);
             let display_list = to_display_list(&layout_box);
+            let markdown_source = super::math_markdown_source(&source, display);
             let state = Arc::new(Mutex::new(InlineState::default()));
             if let Ok(mut state) = state.lock() {
-                state.set_text(markdown_source.clone());
+                state.set_text(markdown_source);
             }
 
             Ok(Self {
                 source,
-                markdown_source,
                 display,
                 display_list: Some(display_list),
                 state,
@@ -89,19 +94,17 @@ mod real {
 
         pub(crate) fn fallback(
             source: impl Into<SharedString>,
-            markdown_source: impl Into<SharedString>,
             display: bool,
         ) -> Self {
             let source = source.into();
-            let markdown_source = markdown_source.into();
+            let markdown_source = super::math_markdown_source(&source, display);
             let state = Arc::new(Mutex::new(InlineState::default()));
             if let Ok(mut state) = state.lock() {
-                state.set_text(markdown_source.clone());
+                state.set_text(markdown_source);
             }
 
             Self {
                 source,
-                markdown_source,
                 display,
                 display_list: None,
                 state,
@@ -111,17 +114,6 @@ mod real {
 
         pub(crate) fn with_span(mut self, span: Option<Span>) -> Self {
             self.span = span;
-            self
-        }
-
-        pub(crate) fn with_markdown_source(
-            mut self,
-            markdown_source: impl Into<SharedString>,
-        ) -> Self {
-            self.markdown_source = markdown_source.into();
-            if let Ok(mut state) = self.state.lock() {
-                state.set_text(self.markdown_source.clone());
-            }
             self
         }
 
@@ -159,7 +151,7 @@ mod real {
         }
 
         pub(crate) fn markdown_source(&self) -> SharedString {
-            self.markdown_source.clone()
+            super::math_markdown_source(&self.source, self.display)
         }
 
         pub(crate) fn state(&self) -> Arc<Mutex<InlineState>> {
@@ -180,14 +172,6 @@ mod real {
         pub(crate) fn select_all_for_test(&self) {
             let mut state = self.state.lock().unwrap();
             state.selection = Some((0..state.text.len()).into());
-        }
-    }
-
-    fn math_markdown_source(source: &SharedString, display: bool) -> SharedString {
-        if display {
-            format!("$$\n{}\n$$", source).into()
-        } else {
-            format!("${}$", source).into()
         }
     }
 
@@ -244,8 +228,9 @@ mod real {
             let line_height = window.text_style().line_height_in_pixels(window.rem_size());
             let mut width = px(1.);
             let mut line_count = 0;
+            let markdown_source = self.node.markdown_source();
 
-            for line in fallback_math_lines(&self.node.markdown_source) {
+            for line in fallback_math_lines(&markdown_source) {
                 line_count += 1;
                 width = width.max(
                     shape_fallback_line(line, font_size, window.text_style().color, window).width(),
@@ -344,7 +329,8 @@ mod real {
         ) {
             let font_size = window.text_style().font_size.to_pixels(window.rem_size());
             let line_height = window.text_style().line_height_in_pixels(window.rem_size());
-            for (ix, text) in fallback_math_lines(&self.node.markdown_source)
+            let markdown_source = self.node.markdown_source();
+            for (ix, text) in fallback_math_lines(&markdown_source)
                 .into_iter()
                 .enumerate()
             {
@@ -957,17 +943,9 @@ mod real {
 
             let block = MathNode::try_new("x^2+y^2", true).unwrap();
             let block_markdown = block.markdown_source();
-            assert_eq!(block_markdown.as_ref(), "$$\nx^2+y^2\n$$");
+            assert_eq!(block_markdown.as_ref(), "$$x^2+y^2$$");
             block.state.lock().unwrap().selection = Some((0..block_markdown.len()).into());
             assert_eq!(block.selected_text(), block_markdown.as_ref());
-
-            let paragraph_display = MathNode::try_new("x^2+y^2", true)
-                .unwrap()
-                .with_markdown_source("$$x^2+y^2$$");
-            let paragraph_display_markdown = paragraph_display.markdown_source();
-            paragraph_display.state.lock().unwrap().selection =
-                Some((0..paragraph_display_markdown.len()).into());
-            assert_eq!(paragraph_display.selected_text(), "$$x^2+y^2$$");
         }
 
         #[test]
@@ -1114,7 +1092,6 @@ mod no_math {
     #[derive(Debug, Clone)]
     pub(crate) struct MathNode {
         source: SharedString,
-        markdown_source: SharedString,
         display: bool,
         state: Arc<Mutex<InlineState>>,
         span: Option<Span>,
@@ -1123,7 +1100,6 @@ mod no_math {
     impl PartialEq for MathNode {
         fn eq(&self, other: &Self) -> bool {
             self.source == other.source
-                && self.markdown_source == other.markdown_source
                 && self.display == other.display
                 && self.span == other.span
         }
@@ -1139,18 +1115,17 @@ mod no_math {
 
         pub(crate) fn fallback(
             source: impl Into<SharedString>,
-            markdown_source: impl Into<SharedString>,
             display: bool,
         ) -> Self {
-            let markdown_source = markdown_source.into();
+            let source = source.into();
+            let markdown_source = super::math_markdown_source(&source, display);
             let state = Arc::new(Mutex::new(InlineState::default()));
             if let Ok(mut state) = state.lock() {
-                state.set_text(markdown_source.clone());
+                state.set_text(markdown_source);
             }
 
             Self {
-                source: source.into(),
-                markdown_source,
+                source,
                 display,
                 state,
                 span: None,
@@ -1159,17 +1134,6 @@ mod no_math {
 
         pub(crate) fn with_span(mut self, span: Option<Span>) -> Self {
             self.span = span;
-            self
-        }
-
-        pub(crate) fn with_markdown_source(
-            mut self,
-            markdown_source: impl Into<SharedString>,
-        ) -> Self {
-            self.markdown_source = markdown_source.into();
-            if let Ok(mut state) = self.state.lock() {
-                state.set_text(self.markdown_source.clone());
-            }
             self
         }
 
@@ -1203,7 +1167,7 @@ mod no_math {
         }
 
         pub(crate) fn markdown_source(&self) -> SharedString {
-            self.markdown_source.clone()
+            super::math_markdown_source(&self.source, self.display)
         }
 
         pub(crate) fn state(&self) -> Arc<Mutex<InlineState>> {

@@ -1130,7 +1130,7 @@ impl BlockNode {
                     code_block.code()
                 )
             }
-            BlockNode::Math(math) => math.markdown_source().to_string(),
+            BlockNode::Math(math) => format!("$$\n{}\n$$", math.source()),
             BlockNode::Table(table) => {
                 let header = table
                     .children

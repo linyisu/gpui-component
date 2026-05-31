@@ -85,11 +85,6 @@ impl<'a> MarkdownParseContext<'a> {
         let position = node.position.as_ref()?;
         self.source.get(position.start.offset..position.end.offset)
     }
-
-    fn source_for_position(&self, position: Option<&markdown::unist::Position>) -> Option<&'a str> {
-        let position = position?;
-        self.source.get(position.start.offset..position.end.offset)
-    }
 }
 
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, ctx: &mut MarkdownParseContext<'_>) {
@@ -409,11 +404,6 @@ fn parse_inline_math(
 
     match MathNode::try_new(math_source, display) {
         Ok(math) => {
-            let math = if raw_display && let Some(source) = raw_source {
-                math.with_markdown_source(source)
-            } else {
-                math
-            };
             paragraph.push(InlineNode::math(math));
         }
         Err(_) => {
@@ -582,15 +572,11 @@ fn ast_to_node(value: mdast::Node, ctx: &mut MarkdownParseContext<'_>) -> BlockN
             }
         }
         Node::Math(val) => {
-            let markdown_source = ctx
-                .source_for_position(val.position.as_ref())
-                .map(SharedString::from)
-                .unwrap_or_else(|| format!("$$\n{}\n$$", val.value).into());
             let span = ctx.span(val.position);
             match MathNode::try_new(val.value.clone(), true) {
                 Ok(math) => BlockNode::Math(math.with_span(span)),
                 Err(_) => BlockNode::Math(
-                    MathNode::fallback(val.value, markdown_source, true).with_span(span),
+                    MathNode::fallback(val.value, true).with_span(span),
                 ),
             }
         }
@@ -924,10 +910,10 @@ mod tests {
             !math.is_display(),
             "double-dollar math in a table cell should render inline"
         );
-        assert_eq!(math.markdown_source().as_ref(), "$$x^2+y^2=z^2$$");
+        assert_eq!(math.markdown_source().as_ref(), "$x^2+y^2=z^2$");
         assert_eq!(
             document.to_markdown(),
-            "Name | Formula\n:-- | :--\nInline | $$x^2+y^2=z^2$$"
+            "Name | Formula\n:-- | :--\nInline | $x^2+y^2=z^2$"
         );
     }
 
@@ -1122,7 +1108,7 @@ mod tests {
             panic!("expected unsupported block math to remain a math node");
         };
 
-        assert_eq!(math.markdown_source().as_ref(), source);
+        assert_eq!(math.source().as_ref(), "\\frac{1");
         assert_eq!(document.to_markdown(), source);
 
         let round_tripped = parse(
