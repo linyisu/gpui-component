@@ -2201,18 +2201,19 @@ impl CodeBlock {
         // Normal blocks measure their header in flow. A fixed top inset leaves
         // a phantom line and lets actions overlap code at larger text scales.
         // Height-capped blocks retain their pinned corner controls.
-        let mut lang_label = self
+        let lang = self
             .lang()
-            .filter(|lang| !lang.is_empty() && (!scrolling || node_cx.code_block_actions.is_none()))
-            .map(|lang| {
-                div()
-                    .when(scrolling, |label| label.absolute().top(px(7.)).right_3())
-                    .font_family(cx.theme().tokens.typography.sans.clone())
-                    .text_size(cx.theme().tokens.typography.xs.size)
-                    .line_height(relative(1.4))
-                    .text_color(style.muted_foreground())
-                    .child(lang)
-            });
+            .filter(|lang| !lang.trim().is_empty())
+            .unwrap_or_else(|| "text".into());
+        let mut lang_label = (!scrolling || node_cx.code_block_actions.is_none()).then(|| {
+            div()
+                .when(scrolling, |label| label.absolute().top(px(7.)).right_3())
+                .font_family(cx.theme().tokens.typography.sans.clone())
+                .text_size(cx.theme().tokens.typography.xs.size)
+                .line_height(relative(1.4))
+                .text_color(style.muted_foreground())
+                .child(lang)
+        });
         let mut actions = node_cx.code_block_actions.clone().map(|actions| {
             div()
                 .id("actions")
@@ -2970,12 +2971,18 @@ struct TableColumn {
 }
 
 /// Horizontal padding of a table cell: `px_3` unless `style.table_cell`
-/// sets it.
-fn table_cell_padding_x(style: &TextViewStyle, rem_size: Pixels) -> f32 {
+/// sets it. Budget each edge rounded up to a device pixel: layout rounds
+/// the two edges independently before leaving space for the measured text.
+fn table_cell_padding_x(style: &TextViewStyle, window: &Window) -> f32 {
+    let rem_size = window.rem_size();
+    let scale_factor = window.scale_factor();
     let padding = &style.table_cell().padding;
-    let side = |length: Option<DefiniteLength>| match length {
-        Some(DefiniteLength::Absolute(length)) => f32::from(length.to_pixels(rem_size)),
-        _ => f32::from(rems(0.75).to_pixels(rem_size)),
+    let side = |length: Option<DefiniteLength>| {
+        let width = match length {
+            Some(DefiniteLength::Absolute(length)) => length.to_pixels(rem_size),
+            _ => rems(0.75).to_pixels(rem_size),
+        };
+        (f32::from(width) * scale_factor).ceil() / scale_factor
     };
     side(padding.left) + side(padding.right)
 }
@@ -3598,7 +3605,7 @@ impl BlockNode {
         let rem_size = window.rem_size();
         let wrap_min_px = f32::from(rems(4.).to_pixels(rem_size));
         // Widths were measured with the default cell padding.
-        let padding_delta = table_cell_padding_x(style, rem_size) - CELL_PAD_PX;
+        let padding_delta = table_cell_padding_x(style, window) - CELL_PAD_PX;
         // Lengths are rounded to device pixels for layout. Round the content
         // widths up, or a column can lose the fraction of a pixel that keeps
         // its text on one line.

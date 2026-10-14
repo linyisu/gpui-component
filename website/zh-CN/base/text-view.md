@@ -90,7 +90,7 @@ TextViewDefaults::new()
 
 ## 语法高亮由使用者开启
 
-`gpui-base` 默认不启用语法高亮，也不包含 tree-sitter 语言依赖。应用未提供 `code_block_highlighter` 时，围栏代码块只使用中性的代码背景和普通前景色。
+`gpui-base` 默认不启用语法高亮，也不包含 tree-sitter 语言依赖。应用未提供 `code_block_highlighter` 时，围栏代码块只使用中性的代码背景和普通前景色。 未指定语言或语言名为空时，标签显示 `text`；`CodeBlock::lang()` 和复制的 Markdown 保留原始语言信息。
 
 回调接收 `CodeBlock`，并返回 UTF-8 字节范围及对应的 GPUI `HighlightStyle`：
 

@@ -2769,13 +2769,16 @@ mod tests {
                 window.set_rem_size(self.rem_size);
                 div()
                     .w(self.width)
+                    .text_size(gpui::rems(1.))
                     .child(TextView::new(&self.text_view).style(self.style.clone()))
             }
         }
 
-        let short = "Operating revenue (USD)";
+        let short = (0..7)
+            .map(|index| char::from_u32(0x4e10 + index).unwrap())
+            .collect::<String>();
         let source = format!(
-            "| {short} | Note |\n| --- | --- |\n| {short} | x |\n| 1 | {} |\n| 1 | x |",
+            "| {short} | Note |\n| --- | --- |\n| **{short}** | x |\n| 1 | {} |\n| 1 | x |",
             "word ".repeat(30)
         );
         // Heights of the first column's cells, top to bottom.
@@ -2820,7 +2823,10 @@ mod tests {
         };
 
         for (layout, style) in [("wrap", TextViewStyle::default()), ("scroll", scroll())] {
-            for rem_size in [12., 16., 20., 24.] {
+            for rem_size in [12., 16., 20., 24.]
+                .into_iter()
+                .chain((0..20).map(|step| 12.1 + step as f32 * 0.61))
+            {
                 let fits = first_column(4000., style.clone(), rem_size);
                 // Leave room for the short column plus the scrolling long-column floor.
                 let narrow = first_column(700_f32.max(rem_size * 40.), style.clone(), rem_size);
@@ -2828,6 +2834,10 @@ mod tests {
                 assert_eq!(
                     fits[0], fits[3],
                     "{layout}, rem={rem_size}: the header fits on one line"
+                );
+                assert_eq!(
+                    fits[1], fits[3],
+                    "{layout}, rem={rem_size}: the styled short label wraps"
                 );
                 assert_eq!(
                     narrow[..2],

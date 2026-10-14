@@ -109,7 +109,7 @@ and Component turns it on.
 
 ## Syntax highlighting is opt-in
 
-`gpui-base` does not enable syntax highlighting and has no tree-sitter language dependency. Fenced code blocks use the neutral code surface and plain foreground until the application supplies `code_block_highlighter`.
+`gpui-base` does not enable syntax highlighting and has no tree-sitter language dependency. Fenced code blocks use the neutral code surface and plain foreground until the application supplies `code_block_highlighter`. A missing or blank language is displayed as `text`; `CodeBlock::lang()` and copied Markdown retain the original language metadata.
 
 The callback receives a `CodeBlock` and returns byte ranges paired with GPUI `HighlightStyle` values:
 
