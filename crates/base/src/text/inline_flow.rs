@@ -1178,6 +1178,104 @@ fn code_background(
     })
 }
 
+/// Unicode boundaries in the flow's byte space, with inline objects kept indivisible.
+struct LineBreaks {
+    allowed: Vec<usize>,
+    emergency: Vec<usize>,
+    graphemes: Vec<usize>,
+}
+
+impl LineBreaks {
+    fn new(items: &[MeasureItem]) -> Self {
+        use unicode_linebreak::{BreakClass, break_property};
+        let mut text = String::new();
+        let mut offsets = vec![(0, 0)];
+        let mut flow_offset = 0;
+        for item in items {
+            match item {
+                MeasureItem::Text { text: value, .. } => {
+                    for character in value.chars() {
+                        text.push(character);
+                        flow_offset += character.len_utf8();
+                        offsets.push((text.len(), flow_offset));
+                    }
+                }
+                _ => {
+                    text.push('\u{fffc}');
+                    flow_offset += IMAGE_LEN;
+                    offsets.push((text.len(), flow_offset));
+                }
+            }
+        }
+        let flow_index = |index| {
+            offsets[offsets
+                .binary_search_by_key(&index, |&(source, _)| source)
+                .unwrap()]
+            .1
+        };
+        let mut graphemes = Vec::new();
+        let mut emergency = Vec::new();
+        for (index, grapheme) in text.grapheme_indices(true) {
+            let end = index + grapheme.len();
+            let flow_end = flow_index(end);
+            graphemes.push(flow_end);
+            let before = grapheme
+                .chars()
+                .next_back()
+                .map(|c| break_property(c as u32));
+            let after = text[end..].chars().next().map(|c| break_property(c as u32));
+            if before != Some(BreakClass::OpenPunctuation)
+                && !matches!(
+                    after,
+                    Some(
+                        BreakClass::ClosePunctuation
+                            | BreakClass::CloseParenthesis
+                            | BreakClass::Exclamation
+                            | BreakClass::NonStarter
+                            | BreakClass::InfixSeparator
+                    )
+                )
+            {
+                emergency.push(flow_end);
+            }
+        }
+        let allowed = unicode_linebreak::linebreaks(&text)
+            .map(|(index, _)| flow_index(index))
+            .filter(|index| graphemes.binary_search(index).is_ok())
+            .collect();
+        Self {
+            allowed,
+            emergency,
+            graphemes,
+        }
+    }
+
+    /// Prefer a legal Unicode break without splitting a fitting inline-code atom.
+    fn before(&self, start: usize, end: usize, hard_end: usize, atoms: &[Range<usize>]) -> usize {
+        if end >= hard_end {
+            return hard_end;
+        }
+        let fitting = |index: &&usize| {
+            **index > start
+                && !atoms
+                    .iter()
+                    .any(|atom| atom.start < **index && **index < atom.end)
+        };
+        for candidates in [&self.allowed, &self.emergency] {
+            let count = candidates.partition_point(|&index| index <= end);
+            if let Some(&index) = candidates[..count].iter().rev().find(fitting) {
+                return index;
+            }
+        }
+        // An overwide grapheme or punctuation group still advances; no UTF-8 or emoji split.
+        self.graphemes
+            .iter()
+            .copied()
+            .find(|&index| index > start)
+            .unwrap_or(hard_end)
+    }
+}
+
 fn line_ranges(
     items: &[MeasureItem],
     image_sizes: &[Option<Size<Pixels>>],
@@ -1212,6 +1310,7 @@ fn line_ranges(
         .text_system()
         .line_wrapper(text_style.font(), font_size);
     let mut ranges = Vec::new();
+    let breaks = std::cell::OnceCell::new();
 
     for hard_line in hard_lines {
         let mut item_start = 0;
@@ -1258,6 +1357,20 @@ fn line_ranges(
             item_start = item_end;
         }
 
+        let mut offset = hard_line.start;
+        let atoms = wrap_fragments
+            .iter()
+            .filter_map(|fragment| {
+                let (len, atomic) = match fragment {
+                    WrapLineFragment::Text { text } => (text.len(), false),
+                    WrapLineFragment::Element { len_utf8, .. } => (*len_utf8, true),
+                };
+                let range = offset..offset + len;
+                offset += len;
+                atomic.then_some(range)
+            })
+            .collect::<Vec<_>>();
+
         // The wrapper sums per-character widths, which can be narrower than the
         // shaped run (CoreText sets an isolated full-width `，` at half width).
         // Check each line against the shaped spans and re-wrap it tighter when
@@ -1292,6 +1405,14 @@ fn line_ranges(
             // sized to its measured text would drop its last character.
             if end < hard_line.end && spans_width(&spans, start..hard_line.end) <= wrap_width {
                 end = hard_line.end;
+            }
+            if end < hard_line.end {
+                end = breaks.get_or_init(|| LineBreaks::new(items)).before(
+                    start,
+                    end,
+                    hard_line.end,
+                    &atoms,
+                );
             }
             ranges.push(start..end);
             start = end;
@@ -2225,5 +2346,55 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn unicode_wrap_keeps_closing_punctuation_with_text_and_code() {
+        use super::super::inline::test_fonts::{BODY, MONO, WideMonoTextSystem};
+        use gpui::{Empty, TestApp};
+        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
+        let mut window = app.open_window(|_, _| Empty);
+        window.update(|_, window, cx| {
+            for size in [12., 16., 20., 24.] {
+                let style = TextStyle {
+                    font_family: BODY.into(),
+                    font_size: px(size).into(),
+                    ..Default::default()
+                };
+                for (open, close) in [('(', ')'), ('（', '）'), ('[', ']'), ('「', '」')] {
+                    let text = format!("图纸{open}标记 tag_9 归档完成{close}");
+                    let code_start = text.find("tag_9").unwrap();
+                    for code in [false, true] {
+                        let items = vec![MeasureItem::Text {
+                            text: text.clone().into(),
+                            links: vec![],
+                            highlights: if code {
+                                vec![(code_start..code_start + 5, InlineHighlight {
+                                    font_family: Some(MONO.into()),
+                                    font_size_scale: Some(0.875),
+                                    ..Default::default()
+                                })]
+                            } else { vec![] },
+                        }];
+                        for width in (96..480).step_by(7) {
+                            let layout = layout_flow(&items, &[None], &style, Some(px(width as f32)), window, cx);
+                            let rows = layout.lines.iter().map(|(range, _)| {
+                                layout.fragments[range.clone()].iter().filter_map(|fragment| {
+                                    match fragment {
+                                        PositionedFragment::Text { text, .. } => Some(text.as_ref()),
+                                        _ => None,
+                                    }
+                                }).collect::<String>()
+                            }).collect::<Vec<_>>();
+                            assert_eq!(rows.concat(), text, "text must survive wrapping");
+                            for row in rows {
+                                assert!(!row.trim_start().starts_with(close), "orphan {close} at size={size}, width={width}, code={code}: {row:?}");
+                                assert!(!row.trim_end().ends_with(open), "orphan {open} at size={size}, width={width}, code={code}: {row:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 }

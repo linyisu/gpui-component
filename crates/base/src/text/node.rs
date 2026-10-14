@@ -2480,12 +2480,7 @@ impl Paragraph {
         let backgrounds = node_cx.range_backgrounds(fade_key);
 
         if self.should_render_inline_flow() {
-            return InlineFlow::new(
-                leaf_element_id(fade_key),
-                self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
-                node_cx.link_click_handler.clone(),
-            )
-            .into_any_element();
+            return self.render_flow(fade_key, node_cx, cx);
         }
 
         let has_image = children.iter().any(|child| child.image.is_some());
@@ -2662,6 +2657,27 @@ impl Paragraph {
             .id(leaf_element_id(fade_key))
             .children(child_nodes)
             .into_any_element()
+    }
+
+    /// Table cells and mixed paragraphs share Unicode-aware inline wrapping and selection.
+    fn render_flow(
+        &self,
+        fade_key: Option<TextLeafKey>,
+        node_cx: &NodeContext,
+        cx: &mut App,
+    ) -> AnyElement {
+        InlineFlow::new(
+            leaf_element_id(fade_key),
+            self.inline_flow_items(
+                fade_key,
+                node_cx.stream_fades(fade_key),
+                node_cx.range_backgrounds(fade_key),
+                node_cx,
+                cx,
+            ),
+            node_cx.link_click_handler.clone(),
+        )
+        .into_any_element()
     }
 
     fn should_render_inline_flow(&self) -> bool {
@@ -3782,7 +3798,7 @@ impl BlockNode {
                         .span
                         .map(|span| TextLeafKey::table_cell(span.start, cell_ordinal));
                     cell_ordinal += 1;
-                    cell.children.render(fade_key, node_cx, window, cx)
+                    cell.children.render_flow(fade_key, node_cx, cx)
                 });
 
                 let grow = SLACK_GROW * column.max / total_w;
