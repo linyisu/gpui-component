@@ -217,6 +217,7 @@ pub(super) struct Inline {
     text_style: Option<TextStyle>,
     paint_origin: Option<Point<Pixels>>,
     selection_bounds: Option<Bounds<Pixels>>,
+    selection_paint_bounds: Option<Bounds<Pixels>>,
     selection_source: Option<(Arc<Mutex<InlineState>>, Range<usize>)>,
     /// Range highlight backgrounds, painted behind the text.
     range_backgrounds: Vec<(Range<usize>, Hsla)>,
@@ -380,6 +381,7 @@ impl Inline {
             text_style: None,
             paint_origin: None,
             selection_bounds: None,
+            selection_paint_bounds: None,
             selection_source: None,
             range_backgrounds: Vec::new(),
             reveal: None,
@@ -404,6 +406,11 @@ impl Inline {
 
     pub(super) fn selection_bounds(mut self, bounds: Bounds<Pixels>) -> Self {
         self.selection_bounds = Some(bounds);
+        self
+    }
+
+    pub(super) fn selection_paint_bounds(mut self, bounds: Bounds<Pixels>) -> Self {
+        self.selection_paint_bounds = Some(bounds);
         self
     }
 
@@ -1004,7 +1011,32 @@ impl Element for Inline {
                 .text_view_state()
                 .map(|state| state.read(cx).text_view_style.selection())
                 .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
-            Self::paint_selection(selection, &text_layout, &bounds, window, color);
+            if let Some(row) = self.selection_paint_bounds {
+                let start = selection.start.min(selection.end);
+                let end = selection.start.max(selection.end);
+                if start < end
+                    && let (Some(first), Some(last)) = (
+                        text_layout.position_for_index(start),
+                        text_layout.position_for_index(end),
+                    )
+                {
+                    // A flow fragment shares its row's height, regardless of
+                    // its font size. Include code padding only when selection
+                    // reaches that edge, leaving partial selections precise.
+                    let left = if start == 0 { row.left() } else { first.x };
+                    let right = if end == state.text.len() {
+                        row.right()
+                    } else {
+                        last.x
+                    };
+                    window.paint_quad(gpui::fill(
+                        Bounds::from_corners(point(left, row.top()), point(right, row.bottom())),
+                        color,
+                    ));
+                }
+            } else {
+                Self::paint_selection(selection, &text_layout, &bounds, window, color);
+            }
             if let Some((start, end)) = Self::selection_edges(selection, &text_layout)
                 && let Some(text_view_state) = GlobalState::global(cx).text_view_state()
             {

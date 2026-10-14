@@ -204,6 +204,7 @@ pub struct Diff {
     state: Entity<DiffState>,
     style: StyleRefinement,
     line_number: bool,
+    single_line_number: bool,
     syntax_highlight: bool,
     header_visible: bool,
     hover_highlight: DiffHoverHighlight,
@@ -233,6 +234,7 @@ impl Diff {
             state: state.clone(),
             style: StyleRefinement::default(),
             line_number: true,
+            single_line_number: false,
             syntax_highlight: true,
             header_visible: true,
             hover_highlight: DiffHoverHighlight::default(),
@@ -251,6 +253,14 @@ impl Diff {
     /// Shows the original and modified line-number lanes. Default is true.
     pub fn line_number(mut self, value: bool) -> Self {
         self.line_number = value;
+        self
+    }
+    /// Shows one line-number lane in unified mode. Default is false.
+    ///
+    /// Context and added lines use modified line numbers; removed lines use
+    /// original line numbers. Split mode keeps one lane on each side.
+    pub fn single_line_number(mut self, value: bool) -> Self {
+        self.single_line_number = value;
         self
     }
     /// Emphasizes syntax once the state has prepared it. Default is true.
@@ -468,6 +478,7 @@ fn render_diff(
         px(0.)
     };
     let mode = state.mode();
+    let single_line_number = props.single_line_number && mode == DiffMode::Unified;
     let soft_wrap = props.soft_wrap;
     let layout = LayoutKey::new(
         rem,
@@ -475,6 +486,7 @@ fn render_diff(
         font_family.clone(),
         mode,
         props.line_number,
+        single_line_number,
         soft_wrap,
     );
     if state.update_layout(layout, row_height) {
@@ -488,6 +500,7 @@ fn render_diff(
                 &font_family,
                 gutter_width,
                 mode,
+                single_line_number,
                 window,
                 cx,
             )
@@ -513,6 +526,7 @@ fn render_diff(
         rem,
         expansion_lines: state.expansion_lines(),
         line_number: props.line_number,
+        single_line_number,
         syntax_highlight: props.syntax_highlight,
         header_visible: props.header_visible,
         hover_highlight: props.hover_highlight,
@@ -692,7 +706,7 @@ fn render_diff(
                                 px(0.)
                             } else {
                                 let painted = state.geometry().borrow().painted_width();
-                                code_width(painted, gutter_width, rem, mode)
+                                code_width(painted, gutter_width, rem, mode, single_line_number)
                             };
                             if state.record_paint(bounds.size, painted) {
                                 cx.notify();
@@ -746,6 +760,7 @@ struct CodePresentation {
     rem: Pixels,
     expansion_lines: usize,
     line_number: bool,
+    single_line_number: bool,
     syntax_highlight: bool,
     header_visible: bool,
     hover_highlight: DiffHoverHighlight,
@@ -783,23 +798,55 @@ impl CodePresentation {
     }
 }
 
+/// Keep both source mappings for selection, but display only the modified
+/// number when available (or the original number on deleted lines).
+fn displayed_gutters(
+    gutters: [Option<(DiffSide, Option<usize>)>; 2],
+    single_line_number: bool,
+) -> [Option<(DiffSide, Option<usize>)>; 2] {
+    if !single_line_number {
+        return gutters;
+    }
+    let lane = gutters
+        .iter()
+        .flatten()
+        .copied()
+        .find(|(side, ix)| *side == DiffSide::Modified && ix.is_some())
+        .or_else(|| {
+            gutters
+                .iter()
+                .flatten()
+                .copied()
+                .find(|(_, ix)| ix.is_some())
+        });
+    [lane, None]
+}
+
 /// Total row width for code of `width` in the current mode.
-fn code_width(width: Pixels, gutter_width: Pixels, rem: Pixels, mode: DiffMode) -> Pixels {
+fn code_width(
+    width: Pixels,
+    gutter_width: Pixels,
+    rem: Pixels,
+    mode: DiffMode,
+    single_line_number: bool,
+) -> Pixels {
     if mode == DiffMode::Split {
         (width + gutter_width + rem * 2.) * 2.
     } else {
-        width + gutter_width * 2. + rem * 2.
+        width + gutter_width * if single_line_number { 1. } else { 2. } + rem * 2.
     }
 }
 
 /// Estimates content width from the lines widest in display cells, then
 /// shapes those candidates with the code font for resolved geometry.
+#[allow(clippy::too_many_arguments)]
 fn measure_code_width(
     files: &[DiffFile],
     font_size: Pixels,
     family: &SharedString,
     gutter_width: Pixels,
     mode: DiffMode,
+    single_line_number: bool,
     window: &mut Window,
     cx: &App,
 ) -> Pixels {
@@ -849,7 +896,13 @@ fn measure_code_width(
                 .width
         })
         .fold(px(0.), Pixels::max);
-    code_width(width, gutter_width, window.rem_size(), mode)
+    code_width(
+        width,
+        gutter_width,
+        window.rem_size(),
+        mode,
+        single_line_number,
+    )
 }
 
 fn render_row(
@@ -1630,6 +1683,7 @@ fn code_line(
                 code.geometry.clone(),
             )
         }));
+    let gutters = displayed_gutters(gutters, code.single_line_number);
     let gutters_width = if code.line_number {
         code.gutter_width * gutters.iter().flatten().count() as f32
     } else {
@@ -1857,3 +1911,6 @@ mod review_tests;
 mod selection_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod gutter_tests;
