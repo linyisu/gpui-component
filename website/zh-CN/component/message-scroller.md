@@ -298,6 +298,7 @@ GPUI 版本保留必要的滚动行为，省略 React primitive 中重复的 Pro
 | `remeasure(cx)` | 标记所有 row 重新测量。 |
 | `remeasure_items(range, cx)` | 标记指定 range 重新测量。 |
 | `scroll_to_item(index, cx)` | 定位到指定 index；越界返回 `false`。 |
+| `pause_following(cx)` | — | Preserve the reading position and disable tail following until explicitly resumed. |
 | `scroll_to_end(cx)` | 恢复尾部跟随并滚到最新内容。 |
 
 ### `MessageScroller`

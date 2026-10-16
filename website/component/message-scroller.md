@@ -385,6 +385,7 @@ model around this component.
 | `remeasure(cx)` | — | Remeasure all rows after global layout changes. |
 | `remeasure_items(range, cx)` | `true` if valid | Remeasure selected dynamic rows. |
 | `scroll_to_item(index, cx)` | `false` if out of range | Navigate to an arbitrary row index. |
+| `pause_following(cx)` | — | Preserve the reading position and disable tail following until explicitly resumed. |
 | `scroll_to_end(cx)` | tail following enabled | Move to the latest row and resume following. |
 
 ### `MessageScroller`

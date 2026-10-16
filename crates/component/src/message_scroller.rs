@@ -149,6 +149,15 @@ impl MessageScrollerState {
         true
     }
 
+    /// Preserve the current item and pixel offset while disabling automatic tail following.
+    ///
+    /// Use before a reader expands or collapses content. Following stays disabled until
+    /// `scroll_to_end` or `reset` explicitly resumes it, even when short content fits.
+    pub fn pause_following(&mut self, cx: &mut Context<Self>) {
+        self.list_state.set_follow_mode(FollowMode::Normal);
+        cx.notify();
+    }
+
     /// Resume tail following and scroll to the latest row.
     pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
         self.list_state.set_follow_mode(FollowMode::Tail);
@@ -480,6 +489,27 @@ mod tests {
                 assert_eq!(state.item_count(), 2);
                 assert!(state.is_following_tail());
             });
+        });
+    }
+
+    #[gpui::test]
+    fn pausing_preserves_the_reading_offset_during_content_changes(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| MessageScrollerState::new(4, cx));
+        state.update(cx, |state, cx| {
+            state.list_state.scroll_to(ListOffset {
+                item_ix: 1,
+                offset_in_item: px(17.),
+            });
+            let before = state.list_state.logical_scroll_top();
+            state.pause_following(cx);
+            state.remeasure_items(0..3, cx);
+            state.append(2, cx);
+            let after = state.list_state.logical_scroll_top();
+            assert_eq!(before.item_ix, after.item_ix);
+            assert_eq!(before.offset_in_item, after.offset_in_item);
+            assert!(!state.is_following_tail());
+            state.scroll_to_end(cx);
+            assert!(state.is_following_tail());
         });
     }
 
